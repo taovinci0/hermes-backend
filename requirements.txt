@@ -1,0 +1,25 @@
+# Hermes v1.0.0 - Core Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core
+pydantic>=2.0.0
+requests>=2.31.0
+pytz>=2024.1
+python-dateutil>=2.8.2
+pandas>=2.1.0
+numpy>=1.24.0
+scipy>=1.11.0
+tenacity>=8.2.0
+websockets>=12.0
+rich>=13.0.0
+python-dotenv>=1.0.0
+pyyaml>=6.0.0
+
+# Development (optional, or use pyproject.toml[dev])
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-asyncio>=0.21.0
+black>=23.0.0
+ruff>=0.1.0
+mypy>=1.5.0
+

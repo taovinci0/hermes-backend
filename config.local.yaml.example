@@ -1,0 +1,23 @@
+# Example local configuration overrides
+# Copy this to config.local.yaml and customize as needed
+# (config.local.yaml is git-ignored)
+
+# Override Zeus settings
+# zeus:
+#   api_key: "your-zeus-key-here"
+
+# Override trading parameters
+# trading:
+#   edge_min: 0.03
+#   daily_bankroll_cap: 5000.0
+#   active_stations:
+#     - EGLC
+#     - KLGA
+#     - KJFK
+
+# Override execution mode
+# execution_mode: live  # or paper (default)
+
+# Override logging
+# log_level: DEBUG  # or INFO (default)
+

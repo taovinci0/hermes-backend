@@ -1,0 +1,10 @@
+city,station_name,station_code,lat,lon,noaa_station,venue_hint,time_zone
+London,London City Airport,EGLC,51.505,0.05,UKMO,Polymarket London,Europe/London
+New York (Airport),LaGuardia Airport,KLGA,40.7769,-73.8740,KOKX,Polymarket NYC,America/New_York
+New York (City),Central Park,KNYC,40.7789,-73.9692,KOKX,Kalshi NYC,America/New_York
+Los Angeles,LAX Airport,KLAX,33.9425,-118.4081,KLOX,Kalshi LA,America/Los_Angeles
+Miami,MIA Airport,KMIA,25.7933,-80.2906,KMFL,Kalshi Miami,America/New_York
+Philadelphia,PHL Airport,KPHL,39.8721,-75.2407,KPHI,Kalshi Philadelphia,America/New_York
+Austin,AUS Airport,KAUS,30.1975,-97.6664,KEWX,Kalshi Austin,America/Chicago
+Denver,DEN Airport,KDEN,39.8561,-104.6737,KBOU,Kalshi Denver,America/Denver
+Chicago,Midway Airport,KMDW,41.7868,-87.7522,KLOT,Kalshi Chicago,America/Chicago
