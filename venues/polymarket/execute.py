@@ -1,9 +1,11 @@
 """Polymarket execution - paper and live order placement.
 
 Stage 6 (paper) and Stage 8 (live) implementation.
+Stage 7B enhancement: Save price snapshots for future backtesting.
 """
 
 import csv
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -28,17 +30,22 @@ class Broker:
 class PaperBroker(Broker):
     """Paper trading broker - records intended orders without execution."""
 
-    def __init__(self, trades_dir: Optional[Path] = None):
+    def __init__(self, trades_dir: Optional[Path] = None, save_prices: bool = True):
         """Initialize paper broker.
 
         Args:
             trades_dir: Directory for trade logs (defaults to data/trades/)
+            save_prices: Whether to save price snapshots for backtesting
         """
         if trades_dir is None:
             trades_dir = PROJECT_ROOT / "data" / "trades"
         
         self.trades_dir = trades_dir
         self.trades_placed = []
+        self.save_prices = save_prices
+        
+        # Price snapshot directory
+        self.prices_dir = PROJECT_ROOT / "data" / "price_snapshots"
 
     def place(self, decisions: List[EdgeDecision]) -> Path:
         """Record paper trades to CSV.
@@ -124,9 +131,28 @@ class PaperBroker(Broker):
                     f"${decision.size_usd:.2f} @ edge={decision.edge*100:.2f}%"
                 )
         
+        # Save price snapshots for future backtesting (Stage 7B enhancement)
+        if self.save_prices:
+            self._save_price_snapshots(decisions, today)
+        
         logger.info(f"✅ Recorded {len(decisions)} paper trades to {csv_path}")
         
         return csv_path
+    
+    def _save_price_snapshots(self, decisions: List[EdgeDecision], date_str: str) -> None:
+        """Save market prices for future backtesting.
+        
+        Note: EdgeDecision doesn't store p_mkt directly. For now, price snapshots
+        are saved from orchestrator where we have access to BracketProb objects.
+        This method is a placeholder for future enhancement.
+        
+        Args:
+            decisions: List of trade decisions
+            date_str: Date string (YYYY-MM-DD)
+        """
+        # TODO: Update orchestrator to pass BracketProb objects or market prices
+        # For now, skip price snapshot saving (will be handled in orchestrator)
+        logger.debug(f"Price snapshot saving deferred to orchestrator level")
 
     def get_trades(self) -> List[EdgeDecision]:
         """Get list of trades placed in this session.

@@ -235,18 +235,18 @@ class PolyDiscovery:
             # Get market question
             question = market_data.get("question", "")
             
-            # Extract CLOB token ID
-            # clobTokenIds is typically an array: ["token1", "token2"]
-            # We want the first one (usually the "Yes" outcome)
+            # Extract market ID (for Gamma API resolution)
+            # Note: clobTokenIds are used for CLOB API (pricing), 
+            # but market['id'] is needed for Gamma API (resolution)
+            market_id = market_data.get("id")
+            
+            # Extract CLOB token ID for pricing
             clob_ids = market_data.get("clobTokenIds")
+            clob_token_id = None
             if isinstance(clob_ids, list) and clob_ids:
-                market_id = clob_ids[0]  # First token ID
+                clob_token_id = clob_ids[0]  # First token ID (for pricing API)
             elif isinstance(clob_ids, str):
-                # Could be comma-separated string
-                market_id = clob_ids.split(",")[0].strip().strip('"[]')
-            else:
-                # Fallback to regular id
-                market_id = market_data.get("id")
+                clob_token_id = clob_ids.split(",")[0].strip().strip('"[]')
             
             if not question or not market_id:
                 logger.debug(f"Market missing question or ID: {market_data.get('id', 'unknown')}")

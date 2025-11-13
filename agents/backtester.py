@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import List, Optional
+from zoneinfo import ZoneInfo
+import json
 
 from core.config import PROJECT_ROOT
 from core.logger import logger
@@ -48,6 +50,7 @@ class BacktestTrade:
     realized_pnl: float
     market_prob_close: Optional[float] = None
     market_id: Optional[str] = None  # For resolution lookup
+    winner_bracket: Optional[str] = None  # Actual winning bracket from Polymarket
 
 
 @dataclass
@@ -110,6 +113,9 @@ class Backtester:
         # Output directory
         self.runs_dir = PROJECT_ROOT / "data" / "runs" / "backtests"
         self.runs_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Price snapshots directory (from paper trading)
+        self.price_snapshots_dir = PROJECT_ROOT / "data" / "price_snapshots"
     
     def run(
         self,
@@ -161,6 +167,12 @@ class Backtester:
         # Save results
         output_path = self._save_results(start_date, end_date, all_trades)
         
+        # For resolution-only backtests, also save a simple summary
+        if all_trades and any(t.market_prob_open is None for t in all_trades):
+            logger.info("Creating resolution-only summary...")
+            summary_path = self._save_resolution_summary(all_trades, start_date, end_date)
+            logger.info(f"📊 Resolution summary: {summary_path}")
+        
         # Print summary
         summary = self._calculate_summary(start_date, end_date, all_trades)
         self._print_summary(summary)
@@ -189,11 +201,16 @@ class Backtester:
         
         logger.debug(f"Backtesting {station.city} on {trade_date}")
         
-        # 1. Get Zeus forecast for market open (assume 9am local time)
-        market_open = datetime.combine(
+        # 1. Get Zeus forecast for the full LOCAL day (midnight to midnight)
+        # Convert local midnight to UTC, then fetch 24 hours from there
+        # This ensures we get all 24 hours of the local date
+        local_midnight = datetime.combine(
             trade_date,
-            datetime.min.time().replace(hour=9)
-        )
+            datetime.min.time()  # 00:00:00
+        ).replace(tzinfo=ZoneInfo(station.time_zone))
+        
+        # Convert to UTC for Zeus API
+        market_open = local_midnight.astimezone(ZoneInfo("UTC"))
         
         try:
             zeus_forecast = self.zeus.fetch(
@@ -225,118 +242,213 @@ class Backtester:
         # 3. Map Zeus probabilities
         zeus_probs = self.prob_mapper.map_daily_high(zeus_forecast, brackets)
         
-        # 4. Get opening prices (simulate market open)
+        # 4. Get opening prices (prioritize saved snapshots, then API, then resolution-only)
         market_probs_open = []
+        
+        # First, try to load saved prices from paper trading
+        saved_prices = self._load_saved_prices(trade_date, station_code)
+        
         for bracket in brackets:
-            try:
-                # For closed markets, use price history (Gamma API)
-                # For open markets, use current midpoint (CLOB API)
-                if bracket.closed:
-                    logger.debug(f"Market {bracket.name} is closed, using price history")
+            prob = None
+            
+            # Priority 1: Use saved prices from paper trading
+            if saved_prices and bracket.market_id in saved_prices:
+                prob = saved_prices[bracket.market_id]
+                logger.debug(f"Using saved price for {bracket.name}: {prob:.4f}")
+            
+            # Priority 2: Try API (for closed markets use history, open markets use midpoint)
+            elif bracket.closed:
+                logger.debug(f"Market {bracket.name} is closed, trying price history")
+                try:
                     prob = self.pricing.get_price_history(bracket)
-                else:
-                    logger.debug(f"Market {bracket.name} is open, using midpoint")
+                except Exception as e:
+                    logger.debug(f"Price history unavailable for {bracket.name}: {e}")
+            else:
+                logger.debug(f"Market {bracket.name} is open, using midpoint")
+                try:
                     prob = self.pricing.midprob(bracket, save_snapshot=False)
-                
-                market_probs_open.append(prob)
-            except Exception as e:
-                logger.warning(f"Failed to get price for {bracket.name}: {e}")
-                market_probs_open.append(None)
+                except Exception as e:
+                    logger.warning(f"Failed to get price for {bracket.name}: {e}")
+            
+            market_probs_open.append(prob)
+        
+        # Log price availability
+        prices_found = sum(1 for p in market_probs_open if p is not None)
+        logger.info(f"Prices available: {prices_found}/{len(brackets)} brackets")
         
         # 5. Merge Zeus + Market probabilities
-        probs_with_market = []
-        for zeus_prob, market_prob in zip(zeus_probs, market_probs_open):
-            if market_prob is not None:
-                # Copy Zeus prob and add market prob
-                prob_copy = BracketProb(
-                    bracket=zeus_prob.bracket,
-                    p_zeus=zeus_prob.p_zeus,
-                    p_mkt=market_prob,
-                    sigma_z=zeus_prob.sigma_z,
+        # Resolution-only mode: If NO prices available, still create records for resolution
+        if prices_found == 0:
+            logger.info("⚠️  No market prices available - using RESOLUTION-ONLY mode")
+            logger.info("   Will validate Zeus accuracy without P&L calculation")
+            
+            # Create probs with None market prices (resolution-only)
+            probs_with_market = []
+            for zeus_prob in zeus_probs:
+                probs_with_market.append(
+                    BracketProb(
+                        bracket=zeus_prob.bracket,
+                        p_zeus=zeus_prob.p_zeus,
+                        p_mkt=None,  # No market price available
+                        sigma_z=zeus_prob.sigma_z,
+                    )
                 )
-                probs_with_market.append(prob_copy)
+        else:
+            # Normal mode: Merge Zeus + Market probabilities
+            probs_with_market = []
+            for zeus_prob, market_prob in zip(zeus_probs, market_probs_open):
+                if market_prob is not None:
+                    # Copy Zeus prob and add market prob
+                    prob_copy = BracketProb(
+                        bracket=zeus_prob.bracket,
+                        p_zeus=zeus_prob.p_zeus,
+                        p_mkt=market_prob,
+                        sigma_z=zeus_prob.sigma_z,
+                    )
+                    probs_with_market.append(prob_copy)
         
-        if not probs_with_market:
-            logger.debug(f"No valid market prices for {station.city} on {trade_date}")
-            return []
+        # 6. Calculate edges and sizes (only if we have prices)
+        if prices_found > 0:
+            # Normal mode: Calculate edges
+            decisions = self.sizer.decide(
+                probs=probs_with_market,
+                bankroll_usd=self.bankroll_usd,
+            )
+            
+            # Filter for positive edges
+            trades_to_make = [d for d in decisions if d.edge > 0]
+            
+            if not trades_to_make:
+                logger.debug(f"No edges found for {station.city} on {trade_date}")
+                return []
+        else:
+            # Resolution-only mode: No edge calculation, just track brackets
+            logger.info("   Resolution-only: Tracking all brackets for Zeus validation")
+            trades_to_make = probs_with_market  # Use BracketProb objects directly
         
-        # 6. Calculate edges and sizes
-        decisions = self.sizer.decide(
-            probs=probs_with_market,
-            bankroll_usd=self.bankroll_usd,
-        )
-        
-        # Filter for positive edges
-        trades_to_make = [d for d in decisions if d.edge > 0]
-        
-        if not trades_to_make:
-            logger.debug(f"No edges found for {station.city} on {trade_date}")
-            return []
-        
-        # Create mapping from bracket to prob for lookup
-        prob_map = {bp.bracket.market_id: bp for bp in probs_with_market}
-        
-        # 7. Simulate trades and calculate P&L
+        # 7. Create backtest trades
         backtest_trades = []
         
-        for decision in trades_to_make:
-            # Get the corresponding BracketProb to access probabilities
-            bracket_prob = prob_map.get(decision.bracket.market_id)
-            if not bracket_prob:
-                logger.warning(f"Could not find prob for {decision.bracket.name}")
-                continue
-            
-            # Get closing price (end of day)
-            try:
-                market_prob_close = self.pricing.midprob(
-                    decision.bracket,
-                    save_snapshot=False,
+        # Resolution-only mode: trades_to_make is List[BracketProb]
+        if prices_found == 0:
+            for bracket_prob in trades_to_make:
+                trade = BacktestTrade(
+                    date=trade_date,
+                    station_code=station_code,
+                    city=station.city,
+                    bracket_name=bracket_prob.bracket.name,
+                    lower=bracket_prob.bracket.lower_F,
+                    upper=bracket_prob.bracket.upper_F,
+                    zeus_prob=bracket_prob.p_zeus,
+                    market_prob_open=None,  # No price data
+                    edge=0.0,  # Can't calculate edge
+                    size_usd=0.0,  # No trade sizing
+                    outcome="pending",
+                    realized_pnl=0.0,
+                    market_prob_close=None,
+                    market_id=bracket_prob.bracket.market_id,
                 )
-            except Exception:
-                market_prob_close = None
+                backtest_trades.append(trade)
+                
+                logger.debug(
+                    f"  Resolution-only: {trade.bracket_name} "
+                    f"(Zeus: {trade.zeus_prob:.1%})"
+                )
+        
+        # Normal mode: trades_to_make is List[EdgeDecision]
+        else:
+            # Create mapping from bracket to prob for lookup
+            prob_map = {bp.bracket.market_id: bp for bp in probs_with_market}
             
-            # For now, mark as pending (would need actual outcomes)
-            # In real backtest, we'd check if temperature hit the bracket
-            outcome = "pending"
-            realized_pnl = 0.0
-            
-            # TODO: Get actual temperature outcome and calculate real P&L
-            # For MVP, we'll just track the edges
-            
-            trade = BacktestTrade(
-                date=trade_date,
-                station_code=station_code,
-                city=station.city,
-                bracket_name=decision.bracket.name,
-                lower=decision.bracket.lower_F,
-                upper=decision.bracket.upper_F,
-                zeus_prob=bracket_prob.p_zeus,
-                market_prob_open=bracket_prob.p_mkt,
-                edge=decision.edge,
-                size_usd=decision.size_usd,
-                outcome=outcome,
-                realized_pnl=realized_pnl,
-                market_prob_close=market_prob_close,
-                market_id=decision.bracket.market_id,  # Store for resolution
-            )
-            
-            backtest_trades.append(trade)
-            
-            logger.info(
-                f"  Backtest trade: {trade.bracket_name} "
-                f"edge={trade.edge:.1%} size=${trade.size_usd:.2f}"
-            )
+            for decision in trades_to_make:
+                # Get the corresponding BracketProb to access probabilities
+                bracket_prob = prob_map.get(decision.bracket.market_id)
+                if not bracket_prob:
+                    logger.warning(f"Could not find prob for {decision.bracket.name}")
+                    continue
+                
+                # Get closing price (end of day)
+                try:
+                    market_prob_close = self.pricing.midprob(
+                        decision.bracket,
+                        save_snapshot=False,
+                    )
+                except Exception:
+                    market_prob_close = None
+                
+                # Mark as pending (will be resolved later)
+                outcome = "pending"
+                realized_pnl = 0.0
+                
+                trade = BacktestTrade(
+                    date=trade_date,
+                    station_code=station_code,
+                    city=station.city,
+                    bracket_name=decision.bracket.name,
+                    lower=decision.bracket.lower_F,
+                    upper=decision.bracket.upper_F,
+                    zeus_prob=bracket_prob.p_zeus,
+                    market_prob_open=bracket_prob.p_mkt,
+                    edge=decision.edge,
+                    size_usd=decision.size_usd,
+                    outcome=outcome,
+                    realized_pnl=realized_pnl,
+                    market_prob_close=market_prob_close,
+                    market_id=decision.bracket.market_id,
+                )
+                
+                backtest_trades.append(trade)
+                
+                logger.info(
+                    f"  Backtest trade: {trade.bracket_name} "
+                    f"edge={trade.edge:.1%} size=${trade.size_usd:.2f}"
+                )
         
         # Resolve trades using Polymarket outcomes (Stage 7A)
         self._resolve_trades(backtest_trades)
         
         return backtest_trades
     
-    def _resolve_trades(self, trades: List[BacktestTrade]) -> None:
-        """Resolve trades using Polymarket outcomes.
+    def _load_saved_prices(self, trade_date: date, station_code: str) -> Optional[dict]:
+        """Load saved prices from paper trading runs.
         
-        Fetches winning outcomes from Polymarket Gamma API and updates
-        trade outcomes and realized P&L.
+        Args:
+            trade_date: Date to load prices for
+            station_code: Station code
+        
+        Returns:
+            Dict mapping market_id → price, or None if not available
+        """
+        date_str = trade_date.isoformat()
+        price_file = self.price_snapshots_dir / date_str / f"{station_code}_prices.json"
+        
+        if not price_file.exists():
+            logger.debug(f"No saved prices found for {station_code} on {trade_date}")
+            return None
+        
+        try:
+            with open(price_file, "r") as f:
+                prices_list = json.load(f)
+            
+            # Convert to dict: market_id → p_mkt
+            prices_dict = {
+                p["market_id"]: p["p_mkt"]
+                for p in prices_list
+                if "market_id" in p and "p_mkt" in p
+            }
+            
+            logger.info(f"📂 Loaded {len(prices_dict)} saved prices for {station_code}")
+            return prices_dict
+            
+        except Exception as e:
+            logger.warning(f"Failed to load saved prices: {e}")
+            return None
+    
+    def _resolve_trades(self, trades: List[BacktestTrade]) -> None:
+        """Resolve trades using Polymarket outcomes via event outcomePrices.
+        
+        Fetches events from Polymarket Gamma API and determines winners
+        by checking outcomePrices field (faster than waiting for resolved flag).
         
         Args:
             trades: List of BacktestTrade objects to resolve (modified in place)
@@ -344,70 +456,95 @@ class Backtester:
         if not trades:
             return
         
-        logger.debug(f"Resolving {len(trades)} trades via Polymarket")
+        logger.debug(f"Resolving {len(trades)} trades via Polymarket events")
+        
+        # Group trades by date and city to fetch events once
+        from collections import defaultdict
+        trades_by_event = defaultdict(list)
         
         for trade in trades:
-            # Skip if no market_id
-            if not trade.market_id:
-                logger.debug(f"Trade {trade.bracket_name} has no market_id, keeping as pending")
-                continue
+            key = (trade.date, trade.city)
+            trades_by_event[key].append(trade)
+        
+        # Resolve each event
+        for (trade_date, city), event_trades in trades_by_event.items():
+            logger.debug(f"Resolving {city} on {trade_date}")
             
             try:
-                # Get resolution from Polymarket
-                result = self.resolution.get_winner(trade.market_id, save_snapshot=True)
+                # Fetch event using discovery
+                event_slug = self.discovery._generate_event_slugs(city, trade_date)
                 
-                if not result["resolved"]:
-                    logger.debug(f"Market {trade.market_id} not yet resolved")
-                    trade.outcome = "pending"
+                event = None
+                for slug in event_slug:
+                    event = self.discovery.get_event_by_slug(slug, save_snapshot=False)
+                    if event:
+                        break
+                
+                if not event:
+                    logger.debug(f"No event found for {city} on {trade_date}")
+                    for trade in event_trades:
+                        trade.outcome = "pending"
                     continue
                 
-                winner = result.get("winner")
-                if not winner:
-                    logger.warning(f"Market {trade.market_id} resolved but no winner found")
-                    trade.outcome = "pending"
+                # Find winner using outcomePrices
+                winner_bracket = self.resolution.get_winner_from_event(event)
+                
+                if not winner_bracket:
+                    logger.debug(f"Event not resolved yet: {city} on {trade_date}")
+                    for trade in event_trades:
+                        trade.outcome = "pending"
                     continue
                 
-                # Check if our bracket won
-                # Winner format varies: could be "55-60" or "55-60°F" or just the bracket
-                # Our bracket: lower=55, upper=60, name="55-60°F"
-                winner_clean = str(winner).replace("°F", "").replace("°", "").strip()
+                logger.info(f"🏆 {city} {trade_date}: Winner = {winner_bracket}")
                 
-                # Try to match on the bracket range
-                bracket_range = f"{trade.lower}-{trade.upper}"
-                
-                if bracket_range in winner_clean or winner_clean in bracket_range:
-                    # WIN!
-                    trade.outcome = "win"
-                    # Calculate P&L: (1/price - 1) * size
-                    # If we bet $100 at price 0.60, we get $100/0.60 = $166.67 back
-                    # Profit = $166.67 - $100 = $66.67
-                    if trade.market_prob_open > 0:
-                        trade.realized_pnl = round(
-                            (1.0 / trade.market_prob_open - 1.0) * trade.size_usd,
-                            2
+                # Apply winner to all trades from this event
+                for trade in event_trades:
+                    # Store actual winner for summary
+                    trade.winner_bracket = winner_bracket
+                    
+                    # Check if this trade's bracket matches the winner
+                    trade_bracket = trade.bracket_name
+                    
+                    # Normalize bracket names for comparison - need EXACT match
+                    winner_normalized = winner_bracket.replace("°F", "").replace("≤", "").replace("≥", "").strip()
+                    trade_normalized = trade_bracket.replace("°F", "").strip()
+                    
+                    if winner_normalized == trade_normalized:
+                        # WIN!
+                        trade.outcome = "win"
+                        
+                        # Calculate P&L only if we have prices
+                        if trade.market_prob_open and trade.market_prob_open > 0:
+                            trade.realized_pnl = round(
+                                (1.0 / trade.market_prob_open - 1.0) * trade.size_usd,
+                                2
+                            )
+                        else:
+                            # Resolution-only mode (no prices)
+                            trade.realized_pnl = 0.0
+                        
+                        logger.info(
+                            f"✅ WIN: {trade.bracket_name} on {trade.date} "
+                            f"(winner: {winner_bracket})"
                         )
                     else:
-                        # Edge case: price was 0
-                        trade.realized_pnl = trade.size_usd
-                    
-                    logger.info(
-                        f"✅ WIN: {trade.bracket_name} on {trade.date} "
-                        f"(winner: {winner}) → +${trade.realized_pnl:.2f}"
-                    )
-                else:
-                    # LOSS
-                    trade.outcome = "loss"
-                    trade.realized_pnl = round(-trade.size_usd, 2)
-                    
-                    logger.info(
-                        f"❌ LOSS: {trade.bracket_name} on {trade.date} "
-                        f"(winner: {winner}) → ${trade.realized_pnl:.2f}"
-                    )
+                        # LOSS
+                        trade.outcome = "loss"
+                        
+                        if trade.market_prob_open and trade.size_usd > 0:
+                            trade.realized_pnl = round(-trade.size_usd, 2)
+                        else:
+                            trade.realized_pnl = 0.0
+                        
+                        logger.debug(
+                            f"❌ LOSS: {trade.bracket_name} on {trade.date} "
+                            f"(winner: {winner_bracket})"
+                        )
             
             except Exception as e:
-                logger.error(f"Failed to resolve trade {trade.bracket_name}: {e}")
-                # Keep as pending if resolution fails
-                trade.outcome = "pending"
+                logger.error(f"Failed to resolve {city} on {trade_date}: {e}")
+                for trade in event_trades:
+                    trade.outcome = "pending"
                 continue
     
     def _save_results(
@@ -461,14 +598,111 @@ class Backtester:
                     trade.lower if trade.lower is not None else "",
                     trade.upper if trade.upper is not None else "",
                     f"{trade.zeus_prob:.4f}",
-                    f"{trade.market_prob_open:.4f}",
-                    f"{trade.market_prob_close:.4f}" if trade.market_prob_close else "",
+                    f"{trade.market_prob_open:.4f}" if trade.market_prob_open is not None else "",
+                    f"{trade.market_prob_close:.4f}" if trade.market_prob_close is not None else "",
                     f"{trade.edge:.4f}",
                     f"{trade.size_usd:.2f}",
                     trade.outcome,
                     f"{trade.realized_pnl:.2f}",
                 ])
         
+        return output_path
+    
+    def _save_resolution_summary(
+        self,
+        trades: List[BacktestTrade],
+        start_date: date,
+        end_date: date,
+    ) -> Path:
+        """Save resolution-only summary: Zeus prediction vs actual outcome.
+        
+        For resolution-only backtests, create a simple summary showing:
+        - Date, station, city
+        - Zeus's predicted bracket (highest probability)
+        - Actual winning bracket
+        - Whether Zeus was correct
+        
+        Args:
+            trades: All trades
+            start_date: Start of backtest period
+            end_date: End of backtest period
+        
+        Returns:
+            Path to summary CSV
+        """
+        output_path = (
+            self.runs_dir / 
+            f"{start_date.isoformat()}_to_{end_date.isoformat()}_SUMMARY.csv"
+        )
+        
+        # Group trades by day and station
+        from collections import defaultdict
+        daily_trades = defaultdict(list)
+        
+        for trade in trades:
+            key = (trade.date, trade.station_code, trade.city)
+            daily_trades[key].append(trade)
+        
+        # Write summary
+        with open(output_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            
+            # Header
+            writer.writerow([
+                "date",
+                "station_code", 
+                "city",
+                "zeus_prediction",  # Bracket Zeus chose (highest prob)
+                "zeus_probability",  # Confidence level
+                "actual_outcome",  # What actually happened
+                "zeus_correct",  # YES/NO
+            ])
+            
+            # Data: One row per day/station
+            for (day, station, city), day_trades in sorted(daily_trades.items()):
+                # Find Zeus's top pick (highest probability)
+                zeus_pick = max(day_trades, key=lambda t: t.zeus_prob)
+                
+                # Find actual winner (if resolved)
+                actual_outcome = None
+                
+                # Get the actual winner from any trade (they all have the same winner_bracket)
+                for trade in day_trades:
+                    if trade.winner_bracket:
+                        actual_outcome = trade.winner_bracket
+                        break
+                
+                # Determine if Zeus was correct by comparing Zeus's pick to actual outcome
+                if actual_outcome:
+                    # Normalize both for comparison
+                    zeus_normalized = zeus_pick.bracket_name.replace("°F", "").replace("≤", "").replace("≥", "").strip()
+                    actual_normalized = actual_outcome.replace("°F", "").replace("≤", "").replace("≥", "").strip()
+                    
+                    # Exact match required
+                    if zeus_normalized == actual_normalized:
+                        zeus_correct = "YES"
+                    else:
+                        zeus_correct = "NO"
+                elif any(t.outcome == "loss" for t in day_trades):
+                    # Resolved but no winner info
+                    zeus_correct = "NO"
+                    actual_outcome = "Resolved (outside tracked brackets)"
+                else:
+                    # Still pending
+                    zeus_correct = "PENDING"
+                    actual_outcome = "Not yet resolved"
+                
+                writer.writerow([
+                    day.isoformat(),
+                    station,
+                    city,
+                    zeus_pick.bracket_name,
+                    f"{zeus_pick.zeus_prob:.1%}",
+                    actual_outcome,
+                    zeus_correct,
+                ])
+        
+        logger.info(f"Resolution summary saved to {output_path}")
         return output_path
     
     def _calculate_summary(

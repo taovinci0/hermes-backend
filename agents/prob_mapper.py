@@ -1,6 +1,7 @@
 """Probability mapper - converts Zeus forecasts to bracket probabilities.
 
-Stage 3 implementation.
+Stage 3 implementation (original spread model).
+Stage 7B enhancement (dual model system with configurable switching).
 """
 
 from typing import List, Optional
@@ -9,7 +10,11 @@ from scipy.stats import norm
 
 from core.types import ZeusForecast, MarketBracket, BracketProb
 from core.logger import logger
+from core.config import config
 from core import units
+
+# Import probability models (Stage 7B)
+from agents.prob_models import spread_model, bands_model
 
 
 class ProbabilityMapper:
@@ -206,6 +211,10 @@ class ProbabilityMapper:
     ) -> List[BracketProb]:
         """Convert Zeus forecast into daily-high distribution over brackets.
 
+        Stage 7B: Routes to appropriate model based on config.model_mode:
+        - "spread" (default): Uses hourly spread × √2 (Stage 3 original)
+        - "bands": Uses Zeus likely/possible confidence intervals (Stage 7B)
+
         Computes:
         1. Daily high mean μ as max of hourly temps (K→°F)
         2. Uncertainty σ_Z from Zeus bands or empirical spread
@@ -234,31 +243,29 @@ class ProbabilityMapper:
             f"to {len(brackets)} brackets"
         )
 
-        # Step 1: Compute daily high mean μ
-        mu = self._compute_daily_high_mean(forecast)
-
-        # Step 2: Estimate uncertainty σ_Z
-        sigma = self._estimate_sigma(forecast, mu)
-
-        logger.info(f"Daily high distribution: μ = {mu:.2f}°F, σ = {sigma:.2f}°F")
-
-        # Step 3: Compute probability for each bracket
-        bracket_probs = []
-        for bracket in brackets:
-            prob = self._compute_bracket_probability(bracket, mu, sigma)
-
-            bracket_probs.append(
-                BracketProb(
-                    bracket=bracket,
-                    p_zeus=prob,
-                    p_mkt=None,  # Will be filled by market pricing later
-                    sigma_z=sigma,
-                )
+        # Stage 7B: Route to appropriate model
+        model_mode = config.model_mode
+        
+        if model_mode == "bands":
+            logger.info("🧠 Using Zeus-Bands model (Stage 7B)")
+            bracket_probs = bands_model.compute_probabilities(
+                forecast,
+                brackets,
+                sigma_default=self.sigma_default,
+                sigma_min=self.sigma_min,
+                sigma_max=self.sigma_max,
             )
-
-        # Step 4: Normalize probabilities
-        bracket_probs = self._normalize_probabilities(bracket_probs)
-
+        else:
+            # Default: spread model (Stage 3 original)
+            logger.info("🧠 Using Spread model (default)")
+            bracket_probs = spread_model.compute_probabilities(
+                forecast,
+                brackets,
+                sigma_default=self.sigma_default,
+                sigma_min=self.sigma_min,
+                sigma_max=self.sigma_max,
+            )
+        
         # Log summary
         total_prob = sum(bp.p_zeus for bp in bracket_probs)
         max_prob_bracket = max(bracket_probs, key=lambda bp: bp.p_zeus)

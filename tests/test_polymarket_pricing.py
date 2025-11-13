@@ -49,7 +49,7 @@ def test_pricing_midprob_success(mock_get: Mock) -> None:
     mock_get.assert_called_once()
     args, kwargs = mock_get.call_args
     assert "/midpoint" in args[0]
-    assert kwargs["params"]["market"] == "market_59_60"
+    assert kwargs["params"]["token_id"] == "market_59_60"
 
 
 @patch("venues.polymarket.pricing.requests.get")

@@ -93,6 +93,56 @@ class PolyResolution:
         logger.debug(f"Saved resolution snapshot to {snapshot_path}")
         return snapshot_path
     
+    def get_winner_from_event(self, event_data: dict) -> Optional[str]:
+        """Find winning bracket from event by checking outcomePrices.
+        
+        Args:
+            event_data: Event JSON with markets array
+        
+        Returns:
+            Winning bracket name (e.g., "58-59°F") or None if not resolved
+        """
+        import json
+        import re
+        
+        markets = event_data.get('markets', [])
+        
+        for market in markets:
+            # Parse outcomePrices (stored as JSON string)
+            prices_str = market.get('outcomePrices', '[]')
+            try:
+                if isinstance(prices_str, str):
+                    prices = json.loads(prices_str)
+                else:
+                    prices = prices_str
+            except:
+                continue
+            
+            # Check if "Yes" won (index 0 == "1", since outcomes = ["Yes", "No"])
+            if len(prices) > 0 and str(prices[0]) == "1":
+                # This market's "Yes" outcome won
+                # Parse bracket from question
+                question = market.get('question', '')
+                
+                # Match "between X-Y°F" pattern
+                match = re.search(r'(\d+)-(\d+)°F', question)
+                if match:
+                    return f"{match.group(1)}-{match.group(2)}°F"
+                
+                # Match "X°F or below"
+                if "or below" in question:
+                    match = re.search(r'(\d+)°F', question)
+                    if match:
+                        return f"≤{match.group(1)}°F"
+                
+                # Match "X°F or above/higher"
+                if "or above" in question or "or higher" in question:
+                    match = re.search(r'(\d+)°F', question)
+                    if match:
+                        return f"≥{match.group(1)}°F"
+        
+        return None
+    
     def get_winner(self, market_id: str, save_snapshot: bool = True) -> dict:
         """Get winning outcome for a resolved market.
         
