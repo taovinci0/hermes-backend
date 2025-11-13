@@ -35,7 +35,8 @@ class MarketBracket(BaseModel):
     name: str = Field(description="Bracket display name, e.g., '59-60°F'")
     lower_F: int = Field(description="Lower bound in °F (inclusive)")
     upper_F: int = Field(description="Upper bound in °F (exclusive)")
-    market_id: Optional[str] = Field(default=None, description="Venue-specific market identifier")
+    market_id: Optional[str] = Field(default=None, description="Market ID for resolution (Gamma API)")
+    token_id: Optional[str] = Field(default=None, description="CLOB token ID for pricing (CLOB API)")
     closed: Optional[bool] = Field(default=None, description="Whether market is closed/resolved")
 
 

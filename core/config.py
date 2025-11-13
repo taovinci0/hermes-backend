@@ -62,6 +62,10 @@ class Config(BaseModel):
     model_mode: str = Field(default="spread", description="Probability model: spread or bands")
     zeus_likely_pct: float = Field(default=0.80, description="Zeus likely confidence level (80%)")
     zeus_possible_pct: float = Field(default=0.95, description="Zeus possible confidence level (95%)")
+    
+    # Dynamic trading configuration (Stage 7C)
+    dynamic_interval_seconds: int = Field(default=900, description="Dynamic evaluation interval (seconds)")
+    dynamic_lookahead_days: int = Field(default=2, description="Days ahead to check for markets")
 
     @classmethod
     def load(cls, config_path: Optional[Path] = None) -> "Config":
@@ -97,11 +101,14 @@ class Config(BaseModel):
             },
             "execution_mode": os.getenv("EXECUTION_MODE", "paper"),
             "log_level": os.getenv("LOG_LEVEL", "INFO"),
-            # Probability model configuration (Stage 7B)
-            "model_mode": os.getenv("MODEL_MODE", "spread").lower(),
-            "zeus_likely_pct": float(os.getenv("ZEUS_LIKELY_PCT", "0.80")),
-            "zeus_possible_pct": float(os.getenv("ZEUS_POSSIBLE_PCT", "0.95")),
-        }
+                # Probability model configuration (Stage 7B)
+                "model_mode": os.getenv("MODEL_MODE", "spread").lower(),
+                "zeus_likely_pct": float(os.getenv("ZEUS_LIKELY_PCT", "0.80")),
+                "zeus_possible_pct": float(os.getenv("ZEUS_POSSIBLE_PCT", "0.95")),
+                # Dynamic trading configuration (Stage 7C)
+                "dynamic_interval_seconds": int(os.getenv("DYNAMIC_INTERVAL_SECONDS", "900")),
+                "dynamic_lookahead_days": int(os.getenv("DYNAMIC_LOOKAHEAD_DAYS", "2")),
+            }
 
         # Load overrides from config.local.yaml if present
         if config_path is None:

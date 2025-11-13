@@ -235,16 +235,15 @@ class PolyDiscovery:
             # Get market question
             question = market_data.get("question", "")
             
-            # Extract market ID (for Gamma API resolution)
-            # Note: clobTokenIds are used for CLOB API (pricing), 
-            # but market['id'] is needed for Gamma API (resolution)
+            # Extract both types of IDs:
+            # - market_id: for Gamma API (resolution, market info)
+            # - clob_token_id: for CLOB API (pricing, order book)
             market_id = market_data.get("id")
             
-            # Extract CLOB token ID for pricing
             clob_ids = market_data.get("clobTokenIds")
             clob_token_id = None
             if isinstance(clob_ids, list) and clob_ids:
-                clob_token_id = clob_ids[0]  # First token ID (for pricing API)
+                clob_token_id = clob_ids[0]  # First token ID (YES outcome)
             elif isinstance(clob_ids, str):
                 clob_token_id = clob_ids.split(",")[0].strip().strip('"[]')
             
@@ -267,7 +266,8 @@ class PolyDiscovery:
                 name=f"{lower_F}-{upper_F}°F",
                 lower_F=lower_F,
                 upper_F=upper_F,
-                market_id=market_id,
+                market_id=market_id,  # For resolution
+                token_id=clob_token_id,  # For pricing
                 closed=closed,
             )
             

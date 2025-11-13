@@ -132,10 +132,12 @@ class PolyPricing:
         
         try:
             # Call CLOB /midpoint endpoint
-            # Use token_id parameter (not market)
+            # Use token_id parameter (CLOB token, not market ID)
+            token_id = bracket.token_id or bracket.market_id  # Fallback to market_id if no token_id
+            
             data = self._call_clob_api(
                 "/midpoint",
-                params={"token_id": bracket.market_id}
+                params={"token_id": token_id}
             )
             
             if save_snapshot:

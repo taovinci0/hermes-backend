@@ -88,7 +88,8 @@ def test_discovery_list_temp_brackets_success(mock_get: Mock, tmp_path: Path) ->
     assert brackets[0].name == "59-60°F"
     assert brackets[0].lower_F == 59
     assert brackets[0].upper_F == 60
-    assert brackets[0].market_id == "token1"  # From clobTokenIds[0]
+    assert brackets[0].market_id == "market_59_60"  # From market['id']
+    assert brackets[0].token_id == "token1"  # From clobTokenIds[0]
     
     # Verify sorting by lower bound
     assert brackets[0].lower_F < brackets[1].lower_F < brackets[2].lower_F

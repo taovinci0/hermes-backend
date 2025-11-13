@@ -18,7 +18,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--mode",
-        choices=["fetch", "probmap", "paper", "backtest"],
+        choices=["fetch", "probmap", "paper", "backtest", "dynamic-paper"],
         required=True,
         help="Operation mode",
     )
@@ -75,6 +75,12 @@ def main() -> None:
             return
         stations = args.stations.split(",")
         run_backtest(args.start, args.end, stations)
+    
+    elif args.mode == "dynamic-paper":
+        if not args.stations:
+            logger.error("--stations required for dynamic-paper mode")
+            return
+        run_dynamic_paper(args.stations)
 
 
 def run_fetch(date_str: str, station: str) -> None:
@@ -430,6 +436,47 @@ def run_backtest(start_str: str, end_str: str, stations: list[str]) -> None:
         
     except Exception as e:
         logger.error(f"Backtest failed: {e}", exc_info=True)
+
+
+def run_dynamic_paper(stations_str: str) -> None:
+    """Run dynamic paper trading loop.
+    
+    Continuously evaluates markets and executes paper trades using
+    just-in-time Zeus forecasts and Polymarket pricing.
+    
+    Markets open 1-2 days before event, so we check:
+    - Today's events
+    - Tomorrow's events (configurable via DYNAMIC_LOOKAHEAD_DAYS)
+    
+    Uses fresh data every cycle to minimize staleness and improve
+    edge calculation accuracy.
+    
+    Args:
+        stations_str: Comma-separated station codes (e.g., "EGLC,KLGA")
+    """
+    from agents.dynamic_trader.dynamic_engine import DynamicTradingEngine
+    
+    stations = [s.strip() for s in stations_str.split(',')]
+    
+    logger.info(f"🚀 Launching dynamic paper trading")
+    logger.info(f"Stations: {', '.join(stations)}")
+    
+    # Get config
+    interval_seconds = config.dynamic_interval_seconds
+    lookahead_days = config.dynamic_lookahead_days
+    
+    logger.info(f"Interval: {interval_seconds}s ({interval_seconds/60:.0f} minutes)")
+    logger.info(f"Lookahead: {lookahead_days} days")
+    
+    # Create and run engine
+    engine = DynamicTradingEngine(
+        stations=stations,
+        interval_seconds=interval_seconds,
+        lookahead_days=lookahead_days,
+    )
+    
+    # Run (blocks until Ctrl+C)
+    engine.run()
 
 
 if __name__ == "__main__":
