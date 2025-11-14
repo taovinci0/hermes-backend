@@ -15,15 +15,20 @@ from core.logger import logger
 from core.registry import Station
 from core.types import EdgeDecision, MarketBracket
 from agents.zeus_forecast import ZeusForecast
+from venues.metar import MetarObservation
 
 
 class DynamicSnapshotter:
-    """Save timestamped snapshots of Zeus, Polymarket, and decisions."""
+    """Save timestamped snapshots of Zeus, Polymarket, decisions, and METAR."""
     
     def __init__(self):
         """Initialize snapshotter with directory structure."""
         self.base_dir = PROJECT_ROOT / "data" / "snapshots" / "dynamic"
         self.base_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Track which METAR observations we've already saved (by observation time)
+        # Key: (station_code, obs_time_iso), Value: True
+        self._saved_metar_obs: dict[tuple[str, str], bool] = {}
     
     def save_all(
         self,
@@ -34,6 +39,7 @@ class DynamicSnapshotter:
         cycle_time: datetime,
         event_day: date,
         station: Station,
+        metar_observations: Optional[List[MetarObservation]] = None,
     ):
         """Save complete snapshot for this evaluation cycle.
         
@@ -45,6 +51,7 @@ class DynamicSnapshotter:
             cycle_time: When this cycle ran (UTC)
             event_day: Event date
             station: Weather station
+            metar_observations: Optional METAR observations (only for today's events)
         """
         # Create timestamp string for filenames (UTC)
         timestamp = cycle_time.strftime("%Y-%m-%d_%H-%M-%S")
@@ -58,6 +65,10 @@ class DynamicSnapshotter:
         # Save decision snapshot (if any decisions made)
         if decisions:
             self._save_decisions(decisions, station, event_day, timestamp, cycle_time)
+        
+        # Save METAR observations (only NEW ones, using observation time)
+        if metar_observations:
+            self._save_metar(metar_observations, station, event_day)
         
         logger.debug(f"💾 Saved snapshots for {station.city} {event_day} @ {timestamp}")
     
@@ -209,4 +220,104 @@ class DynamicSnapshotter:
             json.dump(snapshot_data, f, indent=2)
         
         logger.debug(f"  💾 Decisions → {snapshot_path.name} ({len(decisions)} trades)")
+    
+    def _save_metar(
+        self,
+        observations: List[MetarObservation],
+        station: Station,
+        event_day: date,
+    ):
+        """Save METAR observations, only NEW ones (deduplicated by observation time).
+        
+        Uses observation time (not fetch time) for timestamping.
+        Only saves observations we haven't seen before.
+        
+        Args:
+            observations: List of METAR observations
+            station: Weather station
+            event_day: Event date
+        """
+        if not observations:
+            return
+        
+        metar_dir = self.base_dir / "metar" / station.station_code / event_day.isoformat()
+        metar_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Load existing observation times from disk (for persistence across restarts)
+        existing_obs_times = self._load_existing_metar_times(metar_dir)
+        
+        new_count = 0
+        
+        for obs in observations:
+            # Use observation time (not fetch time) for filename
+            obs_time_str = obs.time.strftime("%Y-%m-%d_%H-%M-%S")
+            
+            # Create unique key for deduplication
+            obs_key = (station.station_code, obs.time.isoformat())
+            
+            # Skip if we've already saved this observation (in-memory)
+            if obs_key in self._saved_metar_obs:
+                logger.debug(f"  ⏭️  METAR: Skipping duplicate (in-memory) @ {obs_time_str}")
+                continue
+            
+            # Skip if file already exists on disk
+            snapshot_path = metar_dir / f"{obs_time_str}.json"
+            if snapshot_path.exists() or obs.time.isoformat() in existing_obs_times:
+                logger.debug(f"  ⏭️  METAR: Skipping duplicate (on disk) @ {obs_time_str}")
+                self._saved_metar_obs[obs_key] = True
+                continue
+            
+            # Save observation
+            snapshot_data = {
+                "observation_time_utc": obs.time.isoformat(),
+                "fetch_time_utc": datetime.now(ZoneInfo("UTC")).isoformat(),
+                "station_code": obs.station_code,
+                "event_day": event_day.isoformat(),
+                "temp_C": obs.temp_C,
+                "temp_F": obs.temp_F,
+                "dewpoint_C": obs.dewpoint_C,
+                "wind_dir": obs.wind_dir,
+                "wind_speed": obs.wind_speed,
+                "raw": obs.raw,
+            }
+            
+            with open(snapshot_path, "w") as f:
+                json.dump(snapshot_data, f, indent=2)
+            
+            # Mark as saved
+            self._saved_metar_obs[obs_key] = True
+            existing_obs_times.add(obs.time.isoformat())
+            new_count += 1
+            
+            logger.debug(f"  💾 METAR → {snapshot_path.name} ({obs.temp_F:.1f}°F)")
+        
+        if new_count > 0:
+            logger.info(f"  ✅ METAR: Saved {new_count} new observation(s) for {station.city}")
+    
+    def _load_existing_metar_times(self, metar_dir: Path) -> set[str]:
+        """Load existing METAR observation times from disk.
+        
+        Args:
+            metar_dir: Directory containing METAR snapshots
+        
+        Returns:
+            Set of observation time ISO strings
+        """
+        existing_times = set()
+        
+        if not metar_dir.exists():
+            return existing_times
+        
+        for snapshot_file in metar_dir.glob("*.json"):
+            try:
+                with open(snapshot_file) as f:
+                    data = json.load(f)
+                    obs_time = data.get("observation_time_utc")
+                    if obs_time:
+                        existing_times.add(obs_time)
+            except (json.JSONDecodeError, KeyError, IOError):
+                # Skip invalid files
+                continue
+        
+        return existing_times
 

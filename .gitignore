@@ -4,7 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
+/build/                   # Python build directory at root (not docs/build/)
 develop-eggs/
 dist/
 downloads/
@@ -63,4 +63,6 @@ logs/
 
 # Documentation builds
 docs/_build/
+# Allow docs/build/ (contains important documentation)
+!docs/build/
 

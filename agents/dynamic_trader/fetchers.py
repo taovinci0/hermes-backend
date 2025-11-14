@@ -13,6 +13,7 @@ from core.types import MarketBracket
 from agents.zeus_forecast import ZeusForecastAgent, ZeusForecast
 from venues.polymarket.discovery import PolyDiscovery
 from venues.polymarket.pricing import PolyPricing
+from venues.metar import METARService, MetarObservation
 
 
 class DynamicFetcher:
@@ -23,6 +24,7 @@ class DynamicFetcher:
         self.zeus = ZeusForecastAgent()
         self.discovery = PolyDiscovery()
         self.pricing = PolyPricing()
+        self.metar = METARService()
     
     def fetch_zeus_jit(
         self,
@@ -159,4 +161,48 @@ class DynamicFetcher:
         except Exception as e:
             logger.debug(f"Error checking events for {city} {event_day}: {e}")
             return False
+    
+    def fetch_metar_jit(
+        self,
+        station: Station,
+        event_day: date,
+    ) -> List[MetarObservation]:
+        """Fetch latest METAR observations for a station.
+        
+        Only fetches if event_day is today (METAR only has current data).
+        Returns only NEW observations that haven't been seen before.
+        
+        Args:
+            station: Weather station
+            event_day: Event date (only fetches if today)
+        
+        Returns:
+            List of NEW MetarObservation objects (empty if no new data)
+        """
+        # Only fetch METAR for today's events (METAR doesn't have future data)
+        today = date.today()
+        if event_day != today:
+            logger.debug(f"Skipping METAR for {event_day} (not today, METAR only has current data)")
+            return []
+        
+        try:
+            # Fetch latest observations (last 24 hours)
+            observations = self.metar.get_observations(
+                station_code=station.station_code,
+                event_date=event_day,
+                hours=24,
+                save_snapshot=False,
+            )
+            
+            if observations:
+                logger.debug(
+                    f"✅ METAR: {len(observations)} observations for {station.city} "
+                    f"(latest: {observations[-1].time.strftime('%H:%M')} UTC)"
+                )
+            
+            return observations
+            
+        except Exception as e:
+            logger.warning(f"Failed to fetch METAR for {station.city}: {e}")
+            return []
 

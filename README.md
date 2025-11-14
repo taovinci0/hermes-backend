@@ -4,9 +4,9 @@
 
 Hermes ingests hourly Zeus weather forecasts, converts them into bracket probabilities for city temperature "daily high" markets, compares those to Polymarket's implied probabilities, sizes trades by edge & liquidity, and executes/monitors positions.
 
-## Status: MVP Complete! 🎉
+## Status: MVP Complete + Backend API! 🎉
 
-**138 tests passing (100%)** • **7.5 stages complete** • **Production-ready paper trading + backtest with resolution**
+**138 tests passing (100%)** • **7.5 stages complete** • **Production-ready paper trading + backtest with resolution + FastAPI backend**
 
 ## Features
 
@@ -16,6 +16,9 @@ Hermes ingests hourly Zeus weather forecasts, converts them into bracket probabi
 - 💰 **Kelly Sizing**: Edge-based position sizing with liquidity awareness ✅
 - 📝 **Paper Trading**: Complete end-to-end paper trading system ✅
 - 📈 **Trade Logging**: Full CSV audit trail with all metadata ✅
+- 🔄 **Dynamic Trading**: Continuous real-time trading loop with JIT fetching ✅
+- 🌡️ **METAR Integration**: Actual temperature observations for validation ✅
+- 🚀 **Backend API**: FastAPI REST API for dashboard and monitoring ✅
 - 🔌 **Modular Design**: Clean architecture for easy extension
 
 ## Quick Start
@@ -86,6 +89,19 @@ python -m core.orchestrator --mode paper --stations EGLC,KLGA
 python -m core.orchestrator --mode backtest --start 2025-10-01 --end 2025-10-31 --stations EGLC,KLGA
 ```
 
+#### Run dynamic paper trading (continuous loop)
+```bash
+python -m core.orchestrator --mode dynamic-paper --stations EGLC,KLGA
+```
+
+#### Start backend API server
+```bash
+cd backend
+pip install -r requirements.txt
+python -m api.main
+# Or: uvicorn api.main:app --reload --host 127.0.0.1 --port 8000
+```
+
 ## Project Structure
 
 ```
@@ -100,20 +116,37 @@ hermes/
 ├── agents/            # Forecast, probability mapping, sizing
 │   ├── zeus_forecast.py
 │   ├── prob_mapper.py
-│   └── edge_and_sizing.py
+│   ├── edge_and_sizing.py
+│   ├── backtester.py
+│   ├── prob_models/   # Probability models (spread, bands)
+│   └── dynamic_trader/ # Dynamic trading engine
 ├── venues/            # Market-specific adapters
-│   └── polymarket/
-│       ├── discovery.py
-│       ├── pricing.py
-│       ├── execute.py
-│       └── schemas.py
+│   ├── polymarket/
+│   │   ├── discovery.py
+│   │   ├── pricing.py
+│   │   ├── execute.py
+│   │   ├── resolution.py
+│   │   └── schemas.py
+│   └── metar/         # METAR weather observations
+│       └── metar_service.py
+├── backend/           # FastAPI backend API
+│   ├── api/
+│   │   ├── main.py
+│   │   ├── routes/    # API endpoints
+│   │   ├── services/  # Data services
+│   │   ├── models/    # Pydantic schemas
+│   │   └── utils/     # Utilities
+│   └── requirements.txt
 ├── data/              # Data storage
 │   ├── registry/
 │   │   └── stations.csv    # 9 weather stations (Polymarket + Kalshi) ✅
-│   ├── snapshots/     # Raw API pulls (Zeus + Polymarket)
+│   ├── snapshots/     # Raw API pulls
+│   │   ├── zeus/      # Zeus forecasts
+│   │   ├── polymarket/ # Polymarket data
+│   │   └── dynamic/   # Dynamic trading snapshots
 │   ├── trades/        # Trade logs (CSV format)
 │   └── runs/          # Backtest results
-├── tests/             # Test suite (111 tests, 100% passing)
+├── tests/             # Test suite (138 tests, 100% passing)
 └── docs/
     └── build/         # Build documentation (stage details)
 ```
@@ -136,7 +169,7 @@ For advanced configuration, create `config.local.yaml` to override defaults.
 
 ### Run tests
 ```bash
-pytest  # 111 tests (Stages 0-6 complete - MVP!)
+pytest  # 138 tests (Stages 0-7D-2 complete!)
 # or: make test
 ```
 
@@ -160,13 +193,19 @@ mypy core agents venues
 - [x] **Stage 4**: Polymarket adapters ✅
 - [x] **Stage 5**: Edge & Kelly sizing ✅
 - [x] **Stage 6**: Paper execution loop ✅ **← MVP COMPLETE!**
-- [ ] **Stage 7**: Backtest harness (next)
+- [x] **Stage 7**: Backtest harness ✅
+- [x] **Stage 7A**: Resolution integration ✅
+- [x] **Stage 7B**: Dual probability models ✅
+- [x] **Stage 7C**: Dynamic trading engine ✅
+- [x] **Stage 7D-1**: METAR integration ✅
+- [x] **Stage 7D-2**: Backend API structure ✅
+- [ ] **Stage 7D-3+**: Frontend dashboard (in progress)
 - [ ] **Stage 8**: Live execution
 - [ ] **Stage 9**: Post-trade metrics
 - [ ] **Stage 10**: Resolution validation
 - [ ] **Stage 11**: Kalshi adapter
 
-**Progress**: 6/11 stages (55%) • **MVP achieved!** 🎉
+**Progress**: 7.5/11 stages (68%) • **MVP + Backend API achieved!** 🎉
 
 See [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) for detailed implementation plan.  
 See `docs/build/` for complete stage-by-stage documentation.
@@ -371,6 +410,39 @@ python monitor_trades.py
 ls -lh data/snapshots/zeus/$(date +%Y-%m-%d)/
 ls -lh data/snapshots/polymarket/markets/
 ```
+
+## Backend API
+
+The FastAPI backend provides REST endpoints for monitoring and dashboard integration.
+
+### Starting the Server
+
+```bash
+cd backend
+pip install -r requirements.txt
+python -m api.main
+# Or: uvicorn api.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+### API Endpoints
+
+- **Health**: `GET /health` - Health check
+- **Status**: `GET /api/status` - System status
+- **Snapshots**: 
+  - `GET /api/snapshots/zeus?station_code=EGLC&event_day=2025-11-13`
+  - `GET /api/snapshots/polymarket?city=London&event_day=2025-11-13`
+  - `GET /api/snapshots/decisions?station_code=EGLC&event_day=2025-11-13`
+  - `GET /api/snapshots/metar?station_code=EGLC&event_day=2025-11-13`
+- **Trades**: 
+  - `GET /api/trades/recent?limit=100&station_code=EGLC`
+  - `GET /api/trades/summary?trade_date=2025-11-13`
+- **Logs**: `GET /api/logs/activity?limit=100&station_code=EGLC`
+
+### Interactive API Documentation
+
+Open http://localhost:8000/docs in your browser for interactive API documentation with "Try it out" buttons.
+
+See `backend/README.md` for detailed API documentation.
 
 ## Support
 

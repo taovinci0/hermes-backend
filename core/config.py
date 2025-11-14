@@ -32,6 +32,13 @@ class PolymarketConfig(BaseModel):
     clob_base: str = Field(default="https://clob.polymarket.com")
 
 
+class METARConfig(BaseModel):
+    """METAR API configuration."""
+
+    api_base: str = Field(default="https://aviationweather.gov/api/data/metar")
+    user_agent: str = Field(default="HermesTradingSystem/1.0")
+
+
 class TradingConfig(BaseModel):
     """Trading parameters and risk limits."""
 
@@ -54,6 +61,7 @@ class Config(BaseModel):
 
     zeus: ZeusConfig = Field(default_factory=ZeusConfig)
     polymarket: PolymarketConfig = Field(default_factory=PolymarketConfig)
+    metar: METARConfig = Field(default_factory=METARConfig)
     trading: TradingConfig = Field(default_factory=TradingConfig)
     execution_mode: str = Field(default="paper", description="Execution mode: paper or live")
     log_level: str = Field(default="INFO")
@@ -89,6 +97,12 @@ class Config(BaseModel):
                 ),
                 "clob_base": os.getenv("POLY_CLOB_BASE", "https://clob.polymarket.com"),
             },
+            "metar": {
+                "api_base": os.getenv(
+                    "METAR_API_BASE", "https://aviationweather.gov/api/data/metar"
+                ),
+                "user_agent": os.getenv("METAR_USER_AGENT", "HermesTradingSystem/1.0"),
+            },
             "trading": {
                 "active_stations": os.getenv("ACTIVE_STATIONS", "EGLC,KLGA").split(","),
                 "edge_min": float(os.getenv("EDGE_MIN", "0.05")),
@@ -101,14 +115,14 @@ class Config(BaseModel):
             },
             "execution_mode": os.getenv("EXECUTION_MODE", "paper"),
             "log_level": os.getenv("LOG_LEVEL", "INFO"),
-                # Probability model configuration (Stage 7B)
-                "model_mode": os.getenv("MODEL_MODE", "spread").lower(),
-                "zeus_likely_pct": float(os.getenv("ZEUS_LIKELY_PCT", "0.80")),
-                "zeus_possible_pct": float(os.getenv("ZEUS_POSSIBLE_PCT", "0.95")),
-                # Dynamic trading configuration (Stage 7C)
-                "dynamic_interval_seconds": int(os.getenv("DYNAMIC_INTERVAL_SECONDS", "900")),
-                "dynamic_lookahead_days": int(os.getenv("DYNAMIC_LOOKAHEAD_DAYS", "2")),
-            }
+            # Probability model configuration (Stage 7B)
+            "model_mode": os.getenv("MODEL_MODE", "spread").lower(),
+            "zeus_likely_pct": float(os.getenv("ZEUS_LIKELY_PCT", "0.80")),
+            "zeus_possible_pct": float(os.getenv("ZEUS_POSSIBLE_PCT", "0.95")),
+            # Dynamic trading configuration (Stage 7C)
+            "dynamic_interval_seconds": int(os.getenv("DYNAMIC_INTERVAL_SECONDS", "900")),
+            "dynamic_lookahead_days": int(os.getenv("DYNAMIC_LOOKAHEAD_DAYS", "2")),
+        }
 
         # Load overrides from config.local.yaml if present
         if config_path is None:

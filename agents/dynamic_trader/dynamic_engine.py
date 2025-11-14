@@ -165,6 +165,10 @@ class DynamicTradingEngine:
                 logger.debug(f"     No brackets available")
                 return 0
             
+            # 2b. Fetch METAR (JIT, only for today's events)
+            logger.debug(f"     Fetching METAR...")
+            metar_observations = self.fetcher.fetch_metar_jit(station, event_day)
+            
             # 3. Map Zeus probabilities
             logger.debug(f"     Mapping probabilities...")
             probs = self.prob_mapper.map_daily_high(forecast, brackets)
@@ -218,6 +222,7 @@ class DynamicTradingEngine:
                     cycle_time=cycle_time,
                     event_day=event_day,
                     station=station,
+                    metar_observations=metar_observations,
                 )
                 
                 return len(trades)
@@ -233,6 +238,7 @@ class DynamicTradingEngine:
                     cycle_time=cycle_time,
                     event_day=event_day,
                     station=station,
+                    metar_observations=metar_observations,
                 )
                 
                 return 0
