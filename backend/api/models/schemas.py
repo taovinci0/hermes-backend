@@ -90,6 +90,12 @@ class Trade(BaseModel):
     p_mkt: Optional[float] = None
     sigma_z: Optional[float] = None
     reason: str
+    # P&L tracking fields
+    outcome: Optional[str] = None  # 'win', 'loss', 'pending'
+    realized_pnl: Optional[float] = None
+    venue: Optional[str] = None  # 'polymarket', 'kalshi'
+    resolved_at: Optional[str] = None
+    winner_bracket: Optional[str] = None
 
 
 # ============================================================================

@@ -4,6 +4,7 @@ Coordinates the pipeline: pull → infer → decide → execute → log
 """
 
 import argparse
+import os
 from datetime import date, datetime
 from pathlib import Path
 
@@ -451,6 +452,9 @@ def run_dynamic_paper(stations_str: str) -> None:
     Uses fresh data every cycle to minimize staleness and improve
     edge calculation accuracy.
     
+    Configuration can be provided via environment variables (set by EngineService)
+    or will fall back to global config.
+    
     Args:
         stations_str: Comma-separated station codes (e.g., "EGLC,KLGA")
     """
@@ -461,18 +465,40 @@ def run_dynamic_paper(stations_str: str) -> None:
     logger.info(f"🚀 Launching dynamic paper trading")
     logger.info(f"Stations: {', '.join(stations)}")
     
-    # Get config
-    interval_seconds = config.dynamic_interval_seconds
-    lookahead_days = config.dynamic_lookahead_days
+    # Get config from environment (set by EngineService) or use global config
+    interval_seconds = int(os.getenv("DYNAMIC_INTERVAL_SECONDS", str(config.dynamic_interval_seconds)))
+    lookahead_days = int(os.getenv("DYNAMIC_LOOKAHEAD_DAYS", str(config.dynamic_lookahead_days)))
+    
+    # Get trading config from environment or use global config
+    trading_config = {
+        "edge_min": float(os.getenv("EDGE_MIN", str(config.trading.edge_min))),
+        "fee_bp": int(os.getenv("FEE_BP", str(config.trading.fee_bp))),
+        "slippage_bp": int(os.getenv("SLIPPAGE_BP", str(config.trading.slippage_bp))),
+        "kelly_cap": float(os.getenv("KELLY_CAP", str(config.trading.kelly_cap))),
+        "per_market_cap": float(os.getenv("PER_MARKET_CAP", str(config.trading.per_market_cap))),
+        "liquidity_min_usd": float(os.getenv("LIQUIDITY_MIN_USD", str(config.trading.liquidity_min_usd))),
+        "daily_bankroll_cap": float(os.getenv("DAILY_BANKROLL_CAP", str(config.trading.daily_bankroll_cap))),
+    }
+    
+    # Get probability model config from environment or use global config
+    probability_model_config = {
+        "model_mode": os.getenv("MODEL_MODE", config.model_mode),
+        "zeus_likely_pct": float(os.getenv("ZEUS_LIKELY_PCT", str(config.zeus_likely_pct))),
+        "zeus_possible_pct": float(os.getenv("ZEUS_POSSIBLE_PCT", str(config.zeus_possible_pct))),
+    }
     
     logger.info(f"Interval: {interval_seconds}s ({interval_seconds/60:.0f} minutes)")
     logger.info(f"Lookahead: {lookahead_days} days")
+    logger.info(f"Model Mode: {probability_model_config['model_mode']}")
+    logger.info(f"Edge Min: {trading_config['edge_min']*100:.1f}%")
     
-    # Create and run engine
+    # Create and run engine with config
     engine = DynamicTradingEngine(
         stations=stations,
         interval_seconds=interval_seconds,
         lookahead_days=lookahead_days,
+        trading_config=trading_config,
+        probability_model_config=probability_model_config,
     )
     
     # Run (blocks until Ctrl+C)

@@ -1,6 +1,7 @@
 """Service for running backtests via API."""
 
 import sys
+import asyncio
 from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import date

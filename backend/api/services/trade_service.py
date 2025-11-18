@@ -75,6 +75,12 @@ class TradeService:
                     p_mkt=float(row["p_mkt"]) if row.get("p_mkt") else None,
                     sigma_z=float(row["sigma_z"]) if row.get("sigma_z") else None,
                     reason=row.get("reason", ""),
+                    # P&L tracking fields
+                    outcome=row.get("outcome") or None,
+                    realized_pnl=float(row["realized_pnl"]) if row.get("realized_pnl") else None,
+                    venue=row.get("venue") or None,
+                    resolved_at=row.get("resolved_at") or None,
+                    winner_bracket=row.get("winner_bracket") or None,
                 )
                 trades.append(trade)
             except (ValueError, KeyError):

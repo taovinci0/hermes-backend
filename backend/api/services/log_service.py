@@ -46,6 +46,10 @@ class LogService:
     def _parse_log_line(self, line: str, log_file: Path) -> Optional[Dict[str, Any]]:
         """Parse a single log line into structured data.
         
+        Handles Rich console output format:
+        - [YYYY-MM-DD HH:MM:SS] LEVEL     message     file.py:line
+        - Continuation lines (no timestamp) are handled separately
+        
         Args:
             line: Raw log line
             log_file: Path to log file
@@ -67,23 +71,34 @@ class LogService:
         }
         
         # Try to extract timestamp
-        # Format: [YYYY-MM-DD HH:MM:SS] or similar
-        timestamp_match = re.search(r'\[(\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2})', line)
+        # Format: [YYYY-MM-DD HH:MM:SS] INFO     message
+        timestamp_match = re.search(r'\[(\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2})\]', line)
         if timestamp_match:
             ts_str = timestamp_match.group(1).replace(" ", "T")
             timestamp = parse_timestamp(ts_str)
             if timestamp:
                 entry["timestamp"] = timestamp.isoformat()
-        
-        # Try to extract log level
-        line_upper = line.upper()
-        for level in self.LOG_LEVELS:
-            if f"| {level} |" in line_upper or f"[{level}]" in line_upper:
-                entry["level"] = level
-                break
+            
+            # Extract log level (comes right after timestamp bracket)
+            # Format: ] INFO     message
+            level_match = re.search(r'\]\s+([A-Z]+)\s+', line)
+            if level_match:
+                level = level_match.group(1).upper()
+                if level in self.LOG_LEVELS:
+                    entry["level"] = level
+            
+            # Extract message (everything after level, before file:line)
+            # Remove file:line suffix if present
+            message_match = re.search(r'\]\s+[A-Z]+\s+(.+?)(?:\s+[a-zA-Z_]+\.py:\d+)?$', line)
+            if message_match:
+                entry["message"] = message_match.group(1).strip()
+        else:
+            # No timestamp - this is a continuation line
+            # Just use the stripped line as message
+            entry["message"] = line.strip()
         
         # Try to extract station code (common patterns: EGLC, KLGA, etc.)
-        station_match = re.search(r'\b([A-Z]{4})\b', line)
+        station_match = re.search(r'\b([A-Z]{4})\b', entry["message"])
         if station_match:
             code = station_match.group(1)
             # Common station codes are 4 letters
@@ -91,7 +106,7 @@ class LogService:
                 entry["station_code"] = code
         
         # Try to extract event day (YYYY-MM-DD format)
-        date_match = re.search(r'\b(\d{4}-\d{2}-\d{2})\b', line)
+        date_match = re.search(r'\b(\d{4}-\d{2}-\d{2})\b', entry["message"])
         if date_match:
             date_str = date_match.group(1)
             try:
@@ -102,7 +117,7 @@ class LogService:
                 pass
         
         # Try to determine action type
-        line_lower = line.lower()
+        line_lower = entry["message"].lower()
         for action_type, patterns in self.ACTION_PATTERNS.items():
             if any(pattern in line_lower for pattern in patterns):
                 entry["action_type"] = action_type
@@ -116,6 +131,9 @@ class LogService:
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Read and parse log entries from a file.
+        
+        Handles multi-line log entries by grouping continuation lines
+        with their timestamped parent line.
         
         Args:
             log_file: Path to log file
@@ -132,10 +150,55 @@ class LogService:
                 lines = f.readlines()
             
             entries = []
+            current_entry = None
+            continuation_lines = []
+            
             for line in lines:
-                entry = self._parse_log_line(line, log_file)
-                if entry:
-                    entries.append(entry)
+                # Check if this line has a timestamp (new log entry)
+                has_timestamp = bool(re.search(r'\[(\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2})\]', line))
+                
+                if has_timestamp:
+                    # Save previous entry if it exists
+                    if current_entry:
+                        # Append continuation lines to message
+                        if continuation_lines:
+                            full_message = current_entry["message"]
+                            for cont_line in continuation_lines:
+                                cont_msg = cont_line.strip()
+                                if cont_msg:
+                                    full_message += " " + cont_msg
+                            current_entry["message"] = full_message
+                        entries.append(current_entry)
+                    
+                    # Start new entry
+                    current_entry = self._parse_log_line(line, log_file)
+                    continuation_lines = []
+                else:
+                    # Continuation line - add to current entry's message
+                    if current_entry:
+                        continuation_lines.append(line)
+                    else:
+                        # Orphaned continuation line - create minimal entry
+                        entry = self._parse_log_line(line, log_file)
+                        if entry:
+                            entries.append(entry)
+            
+            # Don't forget the last entry
+            if current_entry:
+                if continuation_lines:
+                    full_message = current_entry["message"]
+                    for cont_line in continuation_lines:
+                        cont_msg = cont_line.strip()
+                        if cont_msg:
+                            full_message += " " + cont_msg
+                    current_entry["message"] = full_message
+                entries.append(current_entry)
+            
+            # Filter out entries with no meaningful content
+            entries = [
+                e for e in entries
+                if e.get("message") and len(e["message"].strip()) > 0
+            ]
             
             # Sort by timestamp descending (newest first)
             entries.sort(

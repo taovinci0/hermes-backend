@@ -7,7 +7,7 @@ calculates edges, and executes paper trades.
 from datetime import datetime, date, timedelta
 from time import sleep
 from zoneinfo import ZoneInfo
-from typing import List
+from typing import List, Optional, Dict, Any
 
 from core.config import config
 from core.logger import logger
@@ -28,6 +28,8 @@ class DynamicTradingEngine:
         stations: List[str],
         interval_seconds: int = 900,  # 15 minutes default
         lookahead_days: int = 2,
+        trading_config: Optional[Dict[str, Any]] = None,
+        probability_model_config: Optional[Dict[str, Any]] = None,
     ):
         """Initialize dynamic trading engine.
         
@@ -35,21 +37,47 @@ class DynamicTradingEngine:
             stations: List of station codes (e.g., ['EGLC', 'KLGA'])
             interval_seconds: Time between evaluation cycles (default 900 = 15 min)
             lookahead_days: How many days ahead to check (2 = today + tomorrow)
+            trading_config: Trading parameters (if None, uses global config)
+            probability_model_config: Probability model parameters (if None, uses global config)
         """
         self.stations = stations
         self.interval_seconds = interval_seconds
         self.lookahead_days = lookahead_days
+        
+        # Use provided config or fall back to global config
+        if trading_config is None:
+            trading_config = {
+                "edge_min": config.trading.edge_min,
+                "fee_bp": config.trading.fee_bp,
+                "slippage_bp": config.trading.slippage_bp,
+                "kelly_cap": config.trading.kelly_cap,
+                "per_market_cap": config.trading.per_market_cap,
+                "liquidity_min_usd": config.trading.liquidity_min_usd,
+                "daily_bankroll_cap": config.trading.daily_bankroll_cap,
+            }
+        
+        if probability_model_config is None:
+            probability_model_config = {
+                "model_mode": config.model_mode,
+                "zeus_likely_pct": config.zeus_likely_pct,
+                "zeus_possible_pct": config.zeus_possible_pct,
+            }
+        
+        # Store configs
+        self.trading_config = trading_config
+        self.probability_model_config = probability_model_config
         
         # Components
         self.registry = StationRegistry()
         self.fetcher = DynamicFetcher()
         self.prob_mapper = ProbabilityMapper()
         self.sizer = Sizer(
-            edge_min=config.trading.edge_min,
-            fee_bp=config.trading.fee_bp,
-            slippage_bp=config.trading.slippage_bp,
-            kelly_cap=config.trading.kelly_cap,
-            per_market_cap=config.trading.per_market_cap,
+            edge_min=trading_config["edge_min"],
+            fee_bp=trading_config["fee_bp"],
+            slippage_bp=trading_config["slippage_bp"],
+            kelly_cap=trading_config["kelly_cap"],
+            per_market_cap=trading_config["per_market_cap"],
+            liquidity_min_usd=trading_config["liquidity_min_usd"],
         )
         self.broker = PaperBroker(save_prices=False)  # Dynamic mode handles own snapshots
         self.snapshotter = DynamicSnapshotter()
@@ -58,7 +86,9 @@ class DynamicTradingEngine:
         logger.info(f"   Stations: {', '.join(stations)}")
         logger.info(f"   Interval: {interval_seconds}s ({interval_seconds/60:.0f} min)")
         logger.info(f"   Lookahead: {lookahead_days} days")
-        logger.info(f"   Model: {config.model_mode}")
+        logger.info(f"   Model: {probability_model_config['model_mode']}")
+        logger.info(f"   Edge Min: {trading_config['edge_min']*100:.1f}%")
+        logger.info(f"   Kelly Cap: {trading_config['kelly_cap']*100:.1f}%")
     
     def run(self):
         """Run continuous trading loop.
@@ -169,9 +199,16 @@ class DynamicTradingEngine:
             logger.debug(f"     Fetching METAR...")
             metar_observations = self.fetcher.fetch_metar_jit(station, event_day)
             
-            # 3. Map Zeus probabilities
+            # 3. Map Zeus probabilities (using configured model mode)
             logger.debug(f"     Mapping probabilities...")
-            probs = self.prob_mapper.map_daily_high(forecast, brackets)
+            # Temporarily override config.model_mode for this call
+            # (map_daily_high reads from config.model_mode)
+            original_model_mode = config.model_mode
+            try:
+                config.model_mode = self.probability_model_config["model_mode"]
+                probs = self.prob_mapper.map_daily_high(forecast, brackets)
+            finally:
+                config.model_mode = original_model_mode
             
             # 4. Add market prices
             probs_with_market = []
@@ -194,7 +231,7 @@ class DynamicTradingEngine:
             logger.debug(f"     Calculating edges...")
             decisions = self.sizer.decide(
                 probs=probs_with_market,
-                bankroll_usd=config.trading.daily_bankroll_cap,
+                bankroll_usd=self.trading_config["daily_bankroll_cap"],
             )
             
             # Filter positive edges
