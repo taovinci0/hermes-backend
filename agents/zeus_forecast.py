@@ -56,7 +56,7 @@ class ZeusForecastAgent:
         Args:
             lat: Latitude
             lon: Longitude
-            start_utc: Forecast start time in UTC
+            start_utc: Forecast start time (may be local time with timezone - param name is legacy)
             predict_hours: Number of hours to forecast
 
         Returns:
@@ -67,8 +67,14 @@ class ZeusForecastAgent:
         """
         url = f"{self.api_base}/forecast"
         
-        # Format datetime for API (ISO format)
-        start_time_str = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Format datetime for API - preserve timezone if present
+        # Zeus API expects ISO format with timezone (e.g., 2025-11-17T00:00:00-05:00)
+        if start_utc.tzinfo is not None:
+            # Has timezone - use ISO format to preserve it
+            start_time_str = start_utc.isoformat()
+        else:
+            # No timezone - assume UTC and format with Z
+            start_time_str = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
         
         headers = {
             "Authorization": f"Bearer {self.api_key}",

@@ -68,7 +68,12 @@ class PolyPricing:
             return data
             
         except requests.exceptions.HTTPError as e:
-            logger.error(f"CLOB API HTTP error: {e}")
+            # 404 errors can occur for closed markets or invalid token IDs
+            # Log as WARNING instead of ERROR to reduce noise
+            if hasattr(e.response, 'status_code') and e.response.status_code == 404:
+                logger.warning(f"CLOB API 404: {endpoint} (market may be closed or invalid)")
+            else:
+                logger.error(f"CLOB API HTTP error: {e}")
             raise PolymarketPricingError(f"CLOB API HTTP error: {e}") from e
         except requests.exceptions.Timeout as e:
             logger.error(f"CLOB API timeout: {e}")

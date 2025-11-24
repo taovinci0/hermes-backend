@@ -1,0 +1,22 @@
+{
+  "version": "1.0.0",
+  "entries": [
+    {
+      "id": "2025-11-21-initial",
+      "date": "2025-11-21T00:00:00Z",
+      "type": "initial",
+      "category": "documentation",
+      "title": "Initial Strategy Documentation",
+      "description": "Created initial strategy documentation system to track probability models and trading strategies.",
+      "affected_components": ["strategy_documentation"],
+      "changes": [
+        {
+          "component": "documentation",
+          "change": "Added strategy documentation structure",
+          "details": "Created JSON structure to document spread_model and bands_model with simple English explanations"
+        }
+      ]
+    }
+  ]
+}
+

@@ -70,7 +70,12 @@ class PolyDiscovery:
             return data
             
         except requests.exceptions.HTTPError as e:
-            logger.error(f"Gamma API HTTP error: {e}")
+            # 404 errors are expected when trying multiple event slug patterns
+            # Only log them as DEBUG, not ERROR
+            if hasattr(e.response, 'status_code') and e.response.status_code == 404:
+                logger.debug(f"Gamma API 404 (expected): {endpoint}")
+            else:
+                logger.error(f"Gamma API HTTP error: {e}")
             raise PolymarketAPIError(f"Gamma API HTTP error: {e}") from e
         except requests.exceptions.Timeout as e:
             logger.error(f"Gamma API timeout: {e}")
@@ -153,40 +158,39 @@ class PolyDiscovery:
             raise
     
     def _generate_event_slugs(self, city: str, date_local: date) -> List[str]:
-        """Generate possible event slugs for a city/date combination.
+        """Generate event slug for a city/date combination.
+        
+        The pattern is always: highest-temperature-in-{city-slug}-on-{month}-{day}
+        City slug is always "nyc" for New York or "london" for London.
+        Only the month and day change.
         
         Args:
             city: City name (e.g., "London", "New York (Airport)")
             date_local: Local date
         
         Returns:
-            List of possible slug patterns to try
+            List with single slug pattern (only one pattern needed)
         """
-        # Clean city name for slug
+        # Map city names to their Polymarket slug
         city_clean = city.lower().replace(" (airport)", "").replace(" (city)", "")
-        city_slug = city_clean.replace(" ", "-")
+        
+        if "london" in city_clean:
+            city_slug = "london"
+        elif "new york" in city_clean or "nyc" in city_clean:
+            city_slug = "nyc"
+        else:
+            # Fallback: use cleaned city name
+            city_slug = city_clean.replace(" ", "-")
         
         # Format date parts
         month = date_local.strftime("%B").lower()  # "november"
-        day = date_local.day  # 11
+        day = date_local.day  # 19
         
-        # Try multiple slug patterns
-        patterns = [
-            f"highest-temperature-in-{city_slug}-on-{month}-{day}",
-            f"temperature-in-{city_slug}-on-{month}-{day}",
-            f"high-temperature-in-{city_slug}-on-{month}-{day}",
-            f"{city_slug}-temperature-on-{month}-{day}",
-        ]
+        # Pattern is always: highest-temperature-in-{city}-on-{month}-{day}
+        # Only one pattern needed - city slug is fixed (nyc or london)
+        slug = f"highest-temperature-in-{city_slug}-on-{month}-{day}"
         
-        # NYC special cases
-        if "new york" in city_clean or "nyc" in city_clean:
-            patterns.extend([
-                f"highest-temperature-in-nyc-on-{month}-{day}",
-                f"temperature-in-nyc-on-{month}-{day}",
-                f"high-temperature-in-nyc-on-{month}-{day}",
-            ])
-        
-        return patterns
+        return [slug]
 
     def _parse_bracket_from_name(self, name: str) -> Optional[tuple[int, int]]:
         """Parse temperature bracket from market name.

@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 from core.config import config, PROJECT_ROOT
 from core.logger import logger
 from core.registry import Station
-from core.types import EdgeDecision, MarketBracket
+from core.types import EdgeDecision, MarketBracket, BracketProb
 from agents.zeus_forecast import ZeusForecast
 from venues.metar import MetarObservation
 
@@ -40,6 +40,7 @@ class DynamicSnapshotter:
         event_day: date,
         station: Station,
         metar_observations: Optional[List[MetarObservation]] = None,
+        probs: Optional[List[BracketProb]] = None,
     ):
         """Save complete snapshot for this evaluation cycle.
         
@@ -64,7 +65,7 @@ class DynamicSnapshotter:
         
         # Save decision snapshot (if any decisions made)
         if decisions:
-            self._save_decisions(decisions, station, event_day, timestamp, cycle_time)
+            self._save_decisions(decisions, station, event_day, timestamp, cycle_time, probs)
         
         # Save METAR observations (only NEW ones, using observation time)
         if metar_observations:
@@ -178,6 +179,7 @@ class DynamicSnapshotter:
         event_day: date,
         timestamp: str,
         cycle_time: datetime,
+        probs: Optional[List[BracketProb]] = None,
     ):
         """Save trading decisions snapshot.
         
@@ -187,11 +189,19 @@ class DynamicSnapshotter:
             event_day: Event date
             timestamp: Filename timestamp
             cycle_time: When cycle ran
+            probs: Optional BracketProb list to look up p_zeus and p_mkt
         """
         decisions_dir = self.base_dir / "decisions" / station.station_code / event_day.isoformat()
         decisions_dir.mkdir(parents=True, exist_ok=True)
         
         snapshot_path = decisions_dir / f"{timestamp}.json"
+        
+        # Create mapping from market_id to BracketProb for lookup
+        prob_map = {}
+        if probs:
+            for prob in probs:
+                if prob.bracket.market_id:
+                    prob_map[prob.bracket.market_id] = prob
         
         snapshot_data = {
             "decision_time_utc": cycle_time.isoformat(),
@@ -211,6 +221,8 @@ class DynamicSnapshotter:
                     "f_kelly": decision.f_kelly,
                     "size_usd": decision.size_usd,
                     "reason": decision.reason,
+                    "p_zeus": prob_map.get(decision.bracket.market_id).p_zeus if decision.bracket.market_id and prob_map.get(decision.bracket.market_id) else None,
+                    "p_mkt": prob_map.get(decision.bracket.market_id).p_mkt if decision.bracket.market_id and prob_map.get(decision.bracket.market_id) else None,
                 }
                 for decision in decisions
             ],

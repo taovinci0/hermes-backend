@@ -85,10 +85,29 @@ class MetarService:
         if not observations:
             return None
         
-        # Extract temperatures
+        # CRITICAL: Filter to only include observations within event day (00:00-23:59 UTC)
+        # This ensures we don't include late-night observations from previous day
+        filtered_observations = []
+        for obs in observations:
+            obs_time_str = obs.get("observation_time_utc", "")
+            if not obs_time_str:
+                continue
+            
+            obs_time = parse_timestamp(obs_time_str)
+            if obs_time is None:
+                continue
+            
+            # Only include if observation date matches event day (UTC)
+            if obs_time.date() == event_day:
+                filtered_observations.append(obs)
+        
+        if not filtered_observations:
+            return None
+        
+        # Extract temperatures from filtered observations
         temps = [
             obs.get("temp_F")
-            for obs in observations
+            for obs in filtered_observations
             if obs.get("temp_F") is not None
         ]
         

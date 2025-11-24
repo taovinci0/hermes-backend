@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .models.schemas import HealthResponse
-from .routes import status, snapshots, trades, logs, edges, metar, compare, websocket, backtest, engine, config, performance, stations
+from .routes import status, snapshots, trades, logs, edges, metar, compare, websocket, backtest, engine, config, performance, stations, strategy
 
 # Import file watcher (optional - only if watchdog is installed)
 try:
@@ -45,6 +45,7 @@ app.include_router(engine.router, prefix="/api/engine", tags=["engine"])
 app.include_router(config.router, prefix="/api/config", tags=["config"])
 app.include_router(performance.router, prefix="/api/performance", tags=["performance"])
 app.include_router(stations.router, prefix="/api/stations", tags=["stations"])
+app.include_router(strategy.router, prefix="/api", tags=["strategy"])
 
 
 @app.get("/", response_model=HealthResponse)

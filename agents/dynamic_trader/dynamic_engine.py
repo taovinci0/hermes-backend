@@ -260,6 +260,7 @@ class DynamicTradingEngine:
                     event_day=event_day,
                     station=station,
                     metar_observations=metar_observations,
+                    probs=probs_with_market,
                 )
                 
                 return len(trades)
@@ -276,6 +277,7 @@ class DynamicTradingEngine:
                     event_day=event_day,
                     station=station,
                     metar_observations=metar_observations,
+                    probs=probs_with_market,
                 )
                 
                 return 0

@@ -26,6 +26,7 @@ async def get_activity_logs(
     ),
     limit: Optional[int] = Query(100, description="Maximum number of log entries"),
     offset: int = Query(0, description="Number of entries to skip (for pagination)"),
+    human_readable: bool = Query(True, description="Format messages for human readability"),
 ):
     """Get filtered activity logs with pagination.
     
@@ -34,6 +35,9 @@ async def get_activity_logs(
     - Event day (specific date or special values: today, tomorrow, past_3_days, future)
     - Action type (fetch, trade, decision, snapshot, cycle, error)
     - Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    
+    By default, messages are formatted for human readability (removes technical noise,
+    file paths, and formats key information with emojis).
     
     Returns paginated results with total count and has_more flag.
     """
@@ -44,6 +48,7 @@ async def get_activity_logs(
         log_level=log_level,
         limit=limit,
         offset=offset,
+        human_readable=human_readable,
     )
     
     return result

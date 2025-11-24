@@ -136,6 +136,8 @@ class EdgeService:
                         "f_kelly": decision.get("f_kelly", 0.0),
                         "size_usd": decision.get("size_usd", 0.0),
                         "reason": decision.get("reason", ""),
+                        "p_zeus": decision.get("p_zeus"),
+                        "p_mkt": decision.get("p_mkt"),
                     }
                     edges.append(edge_data)
         

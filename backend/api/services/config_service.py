@@ -75,6 +75,9 @@ class ConfigService:
                 "errors": errors,
             }
         
+        # Get old config for changelog
+        old_config = self.get_config()
+        
         # Backup current config
         self._backup_config()
         
@@ -83,6 +86,22 @@ class ConfigService:
         
         # Update YAML file if needed
         self._update_yaml_file(updates)
+        
+        # Get new config for changelog
+        new_config = self.get_config()
+        
+        # Log configuration change to strategy changelog
+        try:
+            from .strategy_service import StrategyService
+            strategy_service = StrategyService()
+            strategy_service.log_configuration_change(
+                old_config=old_config,
+                new_config=new_config,
+            )
+        except Exception as e:
+            # Don't fail the update if changelog logging fails
+            import logging
+            logging.warning(f"Failed to log configuration change to changelog: {e}")
         
         # Determine if restart is required
         requires_restart = self._requires_restart(updates)

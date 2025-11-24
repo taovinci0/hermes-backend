@@ -1,0 +1,110 @@
+{
+  "version": "1.0.0",
+  "last_updated": "2025-11-21T00:00:00Z",
+  "models": {
+    "spread_model": {
+      "name": "Spread Model",
+      "status": "active",
+      "default": true,
+      "description": "Uses the variation in hourly temperature forecasts to estimate uncertainty. This is our original and most tested model.",
+      "how_it_works": {
+        "step_1": "We take all 24 hourly temperature forecasts from Zeus and find the maximum - this becomes our expected daily high temperature (μ).",
+        "step_2": "We calculate how much the hourly temperatures vary (standard deviation) and multiply by √2 to account for the fact that daily highs have more uncertainty than individual hourly readings.",
+        "step_3": "We use a normal distribution (bell curve) centered at our expected high, with the calculated uncertainty, to estimate the probability that the actual daily high falls into each temperature bracket.",
+        "step_4": "The probabilities are normalized so they add up to 100% across all brackets."
+      },
+      "when_to_use": "This is our default model. Use it when you want a proven, conservative approach that works well with the current Zeus API data.",
+      "parameters": {
+        "sigma_default": {
+          "value": 2.0,
+          "unit": "°F",
+          "description": "Default uncertainty when we can't calculate from spread"
+        },
+        "sigma_min": {
+          "value": 0.5,
+          "unit": "°F",
+          "description": "Minimum uncertainty to prevent extreme predictions"
+        },
+        "sigma_max": {
+          "value": 10.0,
+          "unit": "°F",
+          "description": "Maximum uncertainty to prevent overly wide distributions"
+        }
+      },
+      "implementation_file": "agents/prob_models/spread_model.py"
+    },
+    "bands_model": {
+      "name": "Bands Model",
+      "status": "available",
+      "default": false,
+      "description": "Uses Zeus confidence intervals (likely and possible ranges) to estimate uncertainty. More theoretically grounded but requires Zeus API enhancements.",
+      "how_it_works": {
+        "step_1": "We take the peak temperature from Zeus forecasts as our expected daily high (μ).",
+        "step_2": "If Zeus provides confidence bands (likely ≈80% and possible ≈95% ranges), we use these to calculate uncertainty (σ). We solve: σ = (upper_bound - mean) / z_score, where z_score is based on the confidence level.",
+        "step_3": "We average the uncertainty estimates from both confidence levels to get a final σ value.",
+        "step_4": "We use a normal distribution with this σ to calculate bracket probabilities, just like the spread model.",
+        "fallback": "Currently, Zeus API doesn't provide confidence bands, so this model falls back to the spread calculation method."
+      },
+      "when_to_use": "Use this model when Zeus API starts providing confidence bands. It should provide better calibrated uncertainty estimates than the spread model.",
+      "parameters": {
+        "zeus_likely_pct": {
+          "value": 0.80,
+          "unit": "percentage",
+          "description": "Zeus 'likely' confidence level (80%)"
+        },
+        "zeus_possible_pct": {
+          "value": 0.95,
+          "unit": "percentage",
+          "description": "Zeus 'possible' confidence level (95%)"
+        },
+        "sigma_default": {
+          "value": 2.0,
+          "unit": "°F",
+          "description": "Fallback uncertainty when bands unavailable"
+        }
+      },
+      "implementation_file": "agents/prob_models/bands_model.py"
+    }
+  },
+  "trading_strategy": {
+    "edge_calculation": {
+      "description": "We calculate edge as the difference between our Zeus probability and the market probability, minus fees and slippage.",
+      "formula": "Edge = (p_zeus - p_market) - fees - slippage",
+      "minimum_edge": {
+        "value": 0.05,
+        "unit": "decimal (5%)",
+        "description": "We only trade when edge is at least 5%"
+      }
+    },
+    "position_sizing": {
+      "description": "We use the Kelly Criterion to determine how much to bet on each opportunity, with multiple safety caps.",
+      "kelly_formula": "f* = (b×p - q) / b, where b = (1/price - 1), p = our probability, q = 1 - p",
+      "caps": {
+        "kelly_cap": {
+          "value": 0.10,
+          "unit": "decimal (10%)",
+          "description": "Maximum Kelly fraction per trade (10% of bankroll)"
+        },
+        "per_market_cap": {
+          "value": 500.0,
+          "unit": "USD",
+          "description": "Maximum position size per market"
+        },
+        "daily_bankroll_cap": {
+          "value": 3000.0,
+          "unit": "USD",
+          "description": "Maximum total bankroll per day"
+        }
+      }
+    },
+    "liquidity_requirements": {
+      "minimum_liquidity": {
+        "value": 1000.0,
+        "unit": "USD",
+        "description": "We only trade markets with at least $1000 of available liquidity"
+      },
+      "description": "We check market depth to ensure we can enter and exit positions without significant slippage."
+    }
+  }
+}
+
