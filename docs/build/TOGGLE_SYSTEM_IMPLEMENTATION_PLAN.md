@@ -1,151 +1,107 @@
-# Toggle System & Calibration Implementation Plan
+# Station Calibration Toggle System - Implementation Plan
 
 **Date**: 2025-11-21  
-**Purpose**: Plan backend and frontend changes for toggling venue/station rules and calibration  
+**Updated**: 2025-01-XX  
+**Purpose**: Plan backend and frontend changes for toggling station calibration on/off  
 **Priority**: **HIGH** - Enables feature testing and A/B comparison
 
 ---
 
 ## Overview
 
-### Features to Toggle
+### Feature to Toggle
 
-1. **Polymarket Double Rounding**: Match Polymarket's exact rounding chain
-2. **Station Calibration**: Apply station-specific calibration adjustments from ERA5 analysis
+**Station Calibration**: Apply station-specific bias corrections from ERA5 analysis
+- Uses month/hour-specific bias matrix (12×24)
+- Includes elevation offset correction
+- Applied to Zeus temperature predictions before probability calculation
 
 ### Requirements
 
-- Toggle on/off for each feature
+- Toggle on/off for station calibration
 - Updates apply to:
   - Live Dashboard (real-time)
   - Historical/Performance pages
   - Backtesting
-- Calibration tool outputs per-station adjustment values
+- Calibration data loaded from separate tool output files
 
 ---
 
 ## Calibration Tool Output Format
 
-### Option 1: Percentage Adjustment (Recommended)
+### File Structure
 
-**Format**: JSON file with per-station calibration percentages
+**Location**: `output/station_calibration_{STATION_ID}.json`
+
+**Available Files**:
+- `output/station_calibration_EGLC.json` - London City Airport
+- `output/station_calibration_KLGA.json` - LaGuardia Airport
+
+### JSON Schema
 
 ```json
 {
-  "version": "1.0",
-  "generated_date": "2025-11-21",
-  "calibrations": {
-    "EGLC": {
-      "station_code": "EGLC",
-      "station_name": "London City Airport",
-      "calibration_pct": 2.5,
-      "confidence": 0.95,
-      "sample_size": 1825,
-      "notes": "ERA5 grid point offset + terrain adjustment"
-    },
-    "KLGA": {
-      "station_code": "KLGA",
-      "station_name": "LaGuardia Airport",
-      "calibration_pct": -1.2,
-      "confidence": 0.92,
-      "sample_size": 1825,
-      "notes": "ERA5 grid point offset + terrain adjustment"
-    }
+  "station": "EGLC",
+  "version": "2025.1",
+  "bias_model": {
+    "monthly_bias": [0.9968, 1.0126, ..., 1.4029],      // 12 values (Jan-Dec)
+    "hourly_bias": [1.5683, 1.5125, ..., 0.5331],       // 24 values (0-23 hours)
+    "bias_matrix_raw": [                                // 12×24 matrix
+      [0.87, 0.92, ..., 1.40],                          // January (24 hours)
+      [0.88, 0.93, ..., 1.41],                          // February (24 hours)
+      // ... 10 more months
+    ],
+    "bias_matrix_smoothed": [                           // 12×24 matrix (RECOMMENDED)
+      [0.90, 0.94, ..., 1.38],                          // January (24 hours)
+      [0.91, 0.95, ..., 1.39],                          // February (24 hours)
+      // ... 10 more months
+    ]
+  },
+  "elevation": {
+    "station_elev_m": 6.0,
+    "mean_era5_elev_m": 68.87,
+    "elevation_offset_c": 0.4087
   }
 }
 ```
 
-**Application**:
-- `calibration_pct: 2.5` means multiply Zeus prediction by `1.025` (add 2.5%)
-- `calibration_pct: -1.2` means multiply by `0.988` (subtract 1.2%)
+### Field Descriptions
 
-**Pros**:
-- Simple percentage-based adjustment
-- Easy to understand and apply
-- Works well for multiplicative corrections
+| Field | Type | Description |
+|-------|------|-------------|
+| `station` | string | Station ID (e.g., "EGLC", "KLGA") |
+| `version` | string | Model version (e.g., "2025.1") |
+| `bias_model.monthly_bias` | array[12] | Median bias for each month (Jan=index 0, Dec=index 11) |
+| `bias_model.hourly_bias` | array[24] | Median bias for each hour (0-23) |
+| `bias_model.bias_matrix_raw` | array[12][24] | Raw bias matrix before smoothing |
+| `bias_model.bias_matrix_smoothed` | array[12][24] | **RECOMMENDED:** Smoothed bias matrix |
+| `elevation.station_elev_m` | float | Station elevation in meters |
+| `elevation.mean_era5_elev_m` | float | Mean ERA5 grid point elevation in meters |
+| `elevation.elevation_offset_c` | float | Temperature correction due to elevation difference (°C) |
 
-**Cons**:
-- Percentage might not be ideal for temperature (absolute offset might be better)
+### Application Method
 
----
+**Total Correction = Bias + Elevation Offset**
 
-### Option 2: Absolute Temperature Offset (Alternative)
+1. Get bias from `bias_matrix_smoothed[month-1][hour]` (in °C)
+2. Add `elevation_offset_c` (in °C)
+3. Apply to Zeus temperature: `corrected_temp_c = zeus_temp_c + total_correction`
+4. Convert to Fahrenheit for probability calculation
 
-**Format**: JSON file with per-station offsets in Fahrenheit
+**Example**:
+```python
+# Zeus temp: 15.5°C, June 15 at 2 PM
+month = 6  # June
+hour = 14  # 2 PM
 
-```json
-{
-  "version": "1.0",
-  "generated_date": "2025-11-21",
-  "calibrations": {
-    "EGLC": {
-      "station_code": "EGLC",
-      "calibration_offset_f": 0.5,
-      "confidence": 0.95,
-      "sample_size": 1825
-    },
-    "KLGA": {
-      "station_code": "KLGA",
-      "calibration_offset_f": -0.3,
-      "confidence": 0.92,
-      "sample_size": 1825
-    }
-  }
-}
+bias = bias_matrix_smoothed[5][14]  # 0-indexed: month-1, hour
+elevation_offset = elevation['elevation_offset_c']
+total_correction = bias + elevation_offset  # e.g., 0.5 + 0.4 = 0.9°C
+
+corrected_temp_c = 15.5 + 0.9 = 16.4°C
 ```
 
-**Application**:
-- `calibration_offset_f: 0.5` means add `0.5°F` to Zeus prediction
-- `calibration_offset_f: -0.3` means subtract `0.3°F`
-
-**Pros**:
-- More intuitive for temperature (absolute degrees)
-- Easier to reason about impact
-
-**Cons**:
-- Might not scale well if error varies with temperature
-
----
-
-### Option 3: Hybrid (Percentage + Offset)
-
-**Format**: Both percentage and offset
-
-```json
-{
-  "calibrations": {
-    "EGLC": {
-      "calibration_pct": 1.5,
-      "calibration_offset_f": 0.2,
-      "application": "pct_then_offset"  // or "offset_then_pct"
-    }
-  }
-}
-```
-
-**Application**:
-- Apply percentage first, then offset: `(temp * 1.015) + 0.2`
-- Or offset first, then percentage: `(temp + 0.2) * 1.015`
-
-**Pros**:
-- Most flexible
-- Can handle both multiplicative and additive corrections
-
-**Cons**:
-- More complex
-- Requires order specification
-
----
-
-### Recommendation: **Option 1 (Percentage)**
-
-**Rationale**:
-- ERA5 grid point offsets are likely multiplicative (terrain effects scale with temperature)
-- Simpler to implement and understand
-- Easy to backtest and validate
-- Can be converted to offset if needed: `offset = temp * (pct / 100)`
-
-**File Location**: `data/calibration/station_calibrations.json`
+**File Location**: `data/calibration/station_calibration_{STATION_ID}.json`
 
 ---
 
@@ -237,201 +193,311 @@ class FeatureToggles:
 
 ### Stage 2: Backend - Calibration System
 
-**Goal**: Load and apply station calibrations
+**Goal**: Load and apply station calibrations using bias matrix + elevation offset
 
 **Files to Create/Modify**:
 
 1. **`core/station_calibration.py`** (NEW)
-   - Load calibration data
-   - Apply calibration to temperature predictions
+   - Load calibration data from per-station JSON files
+   - Apply bias matrix + elevation correction
    - Handle missing calibrations gracefully
 
-2. **`data/calibration/station_calibrations.json`** (NEW)
-   - Output from calibration tool
-   - Per-station calibration percentages
+2. **`data/calibration/`** (NEW DIRECTORY)
+   - Copy calibration files from separate tool
+   - `station_calibration_EGLC.json`
+   - `station_calibration_KLGA.json`
 
 **Implementation**:
 
 ```python
 # core/station_calibration.py
 from typing import Optional, Dict
+from datetime import datetime
 import json
 from pathlib import Path
 import logging
 
+from .config import PROJECT_ROOT
+
 logger = logging.getLogger(__name__)
 
 class StationCalibration:
-    """Load and apply station-specific calibrations."""
+    """Load and apply station-specific bias corrections from ERA5 analysis."""
     
-    def __init__(self, calibration_path: Optional[Path] = None):
-        if calibration_path is None:
-            calibration_path = Path("data/calibration/station_calibrations.json")
+    def __init__(self, calibration_dir: Optional[Path] = None):
+        if calibration_dir is None:
+            calibration_dir = PROJECT_ROOT / "data" / "calibration"
         
-        self.calibration_path = calibration_path
-        self._calibrations: Dict[str, float] = {}
-        self._load()
+        self.calibration_dir = calibration_dir
+        self._models: Dict[str, dict] = {}
+        self._load_all()
     
-    def _load(self) -> None:
-        """Load calibration data from JSON file."""
-        if not self.calibration_path.exists():
+    def _load_all(self) -> None:
+        """Load all calibration models from directory."""
+        if not self.calibration_dir.exists():
             logger.warning(
-                f"Calibration file not found: {self.calibration_path}. "
+                f"Calibration directory not found: {self.calibration_dir}. "
                 "No calibrations will be applied."
             )
             return
         
-        try:
-            with open(self.calibration_path) as f:
-                data = json.load(f)
-            
-            # Extract calibration percentages
-            calibrations = data.get("calibrations", {})
-            for station_code, calib_data in calibrations.items():
-                if isinstance(calib_data, dict):
-                    pct = calib_data.get("calibration_pct", 0.0)
-                else:
-                    # Backward compatibility: direct percentage value
-                    pct = calib_data
+        # Look for station_calibration_*.json files
+        pattern = "station_calibration_*.json"
+        calibration_files = list(self.calibration_dir.glob(pattern))
+        
+        for calib_file in calibration_files:
+            try:
+                with open(calib_file) as f:
+                    model = json.load(f)
                 
-                self._calibrations[station_code.upper()] = float(pct)
-            
-            logger.info(
-                f"Loaded {len(self._calibrations)} station calibrations from "
-                f"{self.calibration_path}"
-            )
-        except Exception as e:
-            logger.error(f"Failed to load calibrations: {e}")
-            self._calibrations = {}
-    
-    def get_calibration(self, station_code: str) -> float:
-        """Get calibration percentage for a station.
+                station_code = model.get("station", "").upper()
+                if station_code:
+                    self._models[station_code] = model
+                    logger.info(
+                        f"Loaded calibration model for {station_code} "
+                        f"(version {model.get('version', 'unknown')})"
+                    )
+            except Exception as e:
+                logger.error(f"Failed to load calibration from {calib_file}: {e}")
         
-        Args:
-            station_code: Station code (e.g., "EGLC")
-            
-        Returns:
-            Calibration percentage (0.0 if not found)
-        """
-        return self._calibrations.get(station_code.upper(), 0.0)
-    
-    def apply(self, temp_f: float, station_code: str) -> float:
-        """Apply calibration to a temperature prediction.
-        
-        Args:
-            temp_f: Temperature in Fahrenheit
-            station_code: Station code
-            
-        Returns:
-            Calibrated temperature in Fahrenheit
-        """
-        pct = self.get_calibration(station_code)
-        if pct == 0.0:
-            return temp_f
-        
-        # Apply percentage: multiply by (1 + pct/100)
-        multiplier = 1.0 + (pct / 100.0)
-        calibrated = temp_f * multiplier
-        
-        logger.debug(
-            f"Applied calibration to {station_code}: "
-            f"{temp_f:.2f}°F * {multiplier:.4f} = {calibrated:.2f}°F "
-            f"(calibration: {pct:+.2f}%)"
-        )
-        
-        return calibrated
+        logger.info(f"Loaded {len(self._models)} station calibration models")
     
     def has_calibration(self, station_code: str) -> bool:
         """Check if calibration exists for a station."""
-        return station_code.upper() in self._calibrations
+        return station_code.upper() in self._models
+    
+    def get_correction(
+        self, 
+        station_code: str, 
+        month: int, 
+        hour: int
+    ) -> Optional[float]:
+        """Get total correction (bias + elevation) for a station/month/hour.
+        
+        Args:
+            station_code: Station code (e.g., "EGLC")
+            month: Month (1-12, where 1=January)
+            hour: Hour (0-23)
+            
+        Returns:
+            Total correction in °C, or None if calibration not available
+        """
+        model = self._models.get(station_code.upper())
+        if not model:
+            return None
+        
+        try:
+            # Get bias from smoothed matrix (recommended)
+            bias_matrix = model["bias_model"]["bias_matrix_smoothed"]
+            
+            # Validate indices
+            if not (1 <= month <= 12):
+                logger.warning(f"Invalid month: {month}, must be 1-12")
+                return None
+            if not (0 <= hour <= 23):
+                logger.warning(f"Invalid hour: {hour}, must be 0-23")
+                return None
+            
+            # Get bias (month-1 because array is 0-indexed)
+            bias = bias_matrix[month - 1][hour]
+            
+            # Get elevation offset
+            elevation_offset = model["elevation"]["elevation_offset_c"]
+            
+            # Total correction
+            total_correction = bias + elevation_offset
+            
+            return total_correction
+            
+        except (KeyError, IndexError) as e:
+            logger.error(
+                f"Error accessing calibration model for {station_code}: {e}"
+            )
+            return None
+    
+    def apply(
+        self, 
+        temp_c: float, 
+        station_code: str, 
+        timestamp: datetime
+    ) -> float:
+        """Apply calibration to a temperature prediction.
+        
+        Args:
+            temp_c: Temperature in Celsius (from Zeus/ERA5)
+            station_code: Station code
+            timestamp: Datetime for month/hour lookup
+            
+        Returns:
+            Corrected temperature in Celsius
+        """
+        if not self.has_calibration(station_code):
+            return temp_c
+        
+        month = timestamp.month  # 1-12
+        hour = timestamp.hour    # 0-23
+        
+        correction = self.get_correction(station_code, month, hour)
+        if correction is None:
+            return temp_c
+        
+        corrected_temp_c = temp_c + correction
+        
+        logger.debug(
+            f"Applied calibration to {station_code}: "
+            f"{temp_c:.2f}°C + {correction:.4f}°C = {corrected_temp_c:.2f}°C "
+            f"(month={month}, hour={hour})"
+        )
+        
+        return corrected_temp_c
+    
+    def apply_to_forecast_timeseries(
+        self,
+        temps_k: list[float],
+        timestamps: list[datetime],
+        station_code: str,
+    ) -> list[float]:
+        """Apply calibration to a list of temperatures with timestamps.
+        
+        Args:
+            temps_k: List of temperatures in Kelvin
+            timestamps: List of datetime objects (same length as temps_k)
+            station_code: Station code
+            
+        Returns:
+            List of corrected temperatures in Kelvin
+        """
+        from . import units
+        
+        if not self.has_calibration(station_code):
+            return temps_k
+        
+        corrected_temps_k = []
+        for temp_k, ts in zip(temps_k, timestamps):
+            # Convert to Celsius
+            temp_c = units.kelvin_to_celsius(temp_k)
+            
+            # Apply correction
+            corrected_temp_c = self.apply(temp_c, station_code, ts)
+            
+            # Convert back to Kelvin
+            corrected_temp_k = units.celsius_to_kelvin(corrected_temp_c)
+            corrected_temps_k.append(corrected_temp_k)
+        
+        return corrected_temps_k
 ```
 
-**Calibration File Format**:
-```json
-{
-  "version": "1.0",
-  "generated_date": "2025-11-21",
-  "calibrations": {
-    "EGLC": {
-      "station_code": "EGLC",
-      "calibration_pct": 2.5,
-      "confidence": 0.95,
-      "sample_size": 1825
-    },
-    "KLGA": {
-      "station_code": "KLGA",
-      "calibration_pct": -1.2,
-      "confidence": 0.92,
-      "sample_size": 1825
-    }
-  }
-}
+**Calibration File Location**:
+```
+data/calibration/station_calibration_EGLC.json
+data/calibration/station_calibration_KLGA.json
 ```
 
-**Time Estimate**: 2-3 hours
+**Time Estimate**: 3-4 hours
 
 ---
 
-### Stage 3: Backend - Double Rounding Implementation
+### Stage 3: Backend - Integrate Calibration into Probability Calculation
 
-**Goal**: Implement Polymarket double rounding (from previous plan)
+**Goal**: Apply calibration to Zeus forecasts before probability calculation
 
 **Files to Modify**:
 
 1. **`agents/prob_mapper.py`**
-   - Add `match_polymarket_chain` parameter
-   - Implement Celsius → Round whole → Fahrenheit → Round whole
+   - Accept `FeatureToggles` parameter
+   - Apply calibration to forecast timeseries before computing daily high
+   - Use `StationCalibration.apply_to_forecast_timeseries()`
 
 2. **`agents/dynamic_trader/dynamic_engine.py`**
-   - Pass toggle state to `map_daily_high()`
-   - Check `FeatureToggles.polymarket_double_rounding`
+   - Load `FeatureToggles`
+   - Pass to `map_daily_high()`
+   - Apply calibration if enabled
 
 **Implementation**:
 
 ```python
 # agents/prob_mapper.py
-def _compute_daily_high_mean(
-    self, 
-    forecast: ZeusForecast,
-    match_polymarket_chain: bool = False,
-) -> float:
-    """Compute daily high mean, optionally matching Polymarket's rounding chain."""
-    temps_k = [point.temp_K for point in forecast.timeseries]
-    
-    if match_polymarket_chain:
-        # Match Polymarket: Kelvin → Celsius → Round whole → Fahrenheit → Round whole
-        temps_f = []
-        for temp_k in temps_k:
-            temp_c = units.kelvin_to_celsius(temp_k)
-            temp_c_whole = round(temp_c)  # Round to whole
-            temp_f_precise = units.celsius_to_fahrenheit(temp_c_whole)
-            temp_f_whole = round(temp_f_precise)  # Round to whole
-            temps_f.append(temp_f_whole)
-    else:
-        temps_f = [units.kelvin_to_fahrenheit(t) for t in temps_k]
-    
-    return max(temps_f)
+from core.feature_toggles import FeatureToggles
+from core.station_calibration import StationCalibration
 
-def map_daily_high(
-    self,
-    forecast: ZeusForecast,
-    brackets: List[MarketBracket],
-    station_code: str = None,
-    venue: str = None,
-    match_polymarket_chain: bool = False,  # NEW
-) -> List[BracketProb]:
-    # Apply Polymarket rounding if enabled
-    match_polymarket = match_polymarket_chain and (venue == "polymarket")
+class ProbabilityMapper:
+    def __init__(
+        self,
+        sigma_default: float = 2.0,
+        sigma_min: float = 0.5,
+        sigma_max: float = 10.0,
+    ):
+        """Initialize probability mapper."""
+        self.sigma_default = sigma_default
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
+        self.calibration = StationCalibration()  # NEW
     
-    mu = self._compute_daily_high_mean(
-        forecast, 
-        match_polymarket_chain=match_polymarket
-    )
+    def _compute_daily_high_mean(
+        self, 
+        forecast: ZeusForecast,
+        station_code: str = None,
+        feature_toggles: Optional[FeatureToggles] = None,  # NEW
+    ) -> float:
+        """Compute daily high mean, optionally applying calibration."""
+        if not forecast.timeseries:
+            raise ValueError("Forecast has no timeseries data")
+        
+        # Extract temperatures and timestamps
+        temps_k = [point.temp_K for point in forecast.timeseries]
+        timestamps = [point.time_utc for point in forecast.timeseries]
+        
+        # Apply calibration if enabled
+        if feature_toggles and feature_toggles.station_calibration:
+            if station_code:
+                temps_k = self.calibration.apply_to_forecast_timeseries(
+                    temps_k, timestamps, station_code
+                )
+                logger.debug(
+                    f"Applied station calibration to {station_code} forecast"
+                )
+        
+        # Convert to Fahrenheit
+        temps_f = [units.kelvin_to_fahrenheit(t) for t in temps_k]
+        
+        # Daily high is the maximum
+        mu = max(temps_f)
+        
+        logger.debug(
+            f"Computed daily high μ = {mu:.2f}°F from {len(temps_f)} hourly forecasts"
+        )
+        
+        return mu
     
-    # mu is already whole number if matching Polymarket
-    mu_for_prob = mu
-    
-    # Continue with probability calculation...
+    def map_daily_high(
+        self,
+        forecast: ZeusForecast,
+        brackets: List[MarketBracket],
+        station_code: str = None,
+        venue: str = None,
+        feature_toggles: Optional[FeatureToggles] = None,  # NEW
+    ) -> List[BracketProb]:
+        """Map daily high forecast to bracket probabilities."""
+        if feature_toggles is None:
+            feature_toggles = FeatureToggles()  # Default: all off
+        
+        # ✅ STEP 1: Apply calibration to timeseries, then compute daily high
+        mu = self._compute_daily_high_mean(
+            forecast,
+            station_code=station_code,
+            feature_toggles=feature_toggles,
+        )
+        
+        # ✅ STEP 2: Compute spread (σ) using SAME calibrated temperatures
+        sigma = self._estimate_sigma(
+            forecast,
+            mu,
+            station_code=station_code,
+            feature_toggles=feature_toggles,
+        )
+        
+        # ✅ STEP 3: Compute bracket probabilities using calibrated μ and σ
+        # (bracket probability calculation, etc.)
 ```
 
 **Time Estimate**: 3-4 hours
@@ -519,7 +585,7 @@ class ProbMapper:
 1. **`backend/api/routes/features.py`** (NEW)
    - GET `/api/features/toggles` - Get current toggle states
    - PUT `/api/features/toggles` - Update toggle states
-   - GET `/api/features/calibrations` - Get calibration data
+   - GET `/api/features/calibrations` - Get calibration status
 
 2. **`backend/api/main.py`** (MODIFY)
    - Register features router
@@ -530,14 +596,18 @@ class ProbMapper:
 # backend/api/routes/features.py
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from typing import Optional
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 from core.feature_toggles import FeatureToggles
 from core.station_calibration import StationCalibration
 
 router = APIRouter()
 
 class ToggleUpdate(BaseModel):
-    polymarket_double_rounding: bool = None
-    station_calibration: bool = None
+    station_calibration: Optional[bool] = None
 
 @router.get("/api/features/toggles")
 def get_toggles():
@@ -549,9 +619,6 @@ def get_toggles():
 def update_toggles(update: ToggleUpdate):
     """Update feature toggle states."""
     toggles = FeatureToggles.load()
-    
-    if update.polymarket_double_rounding is not None:
-        toggles.polymarket_double_rounding = update.polymarket_double_rounding
     
     if update.station_calibration is not None:
         toggles.station_calibration = update.station_calibration
@@ -565,16 +632,20 @@ def update_toggles(update: ToggleUpdate):
 
 @router.get("/api/features/calibrations")
 def get_calibrations():
-    """Get station calibration data."""
+    """Get station calibration status."""
     calibration = StationCalibration()
+    toggles = FeatureToggles.load()
     
-    calibrations = {}
-    # Load and return calibration data
-    # ...
+    # Get list of stations with calibrations
+    stations_with_cal = []
+    for station_code in ["EGLC", "KLGA"]:  # Add more as needed
+        if calibration.has_calibration(station_code):
+            stations_with_cal.append(station_code)
     
     return {
-        "calibrations": calibrations,
-        "enabled": FeatureToggles.load().station_calibration
+        "enabled": toggles.station_calibration,
+        "stations_with_calibration": stations_with_cal,
+        "total_calibrations": len(stations_with_cal),
     }
 ```
 
@@ -637,7 +708,7 @@ def compare_zeus_vs_metar(
 1. **`agents/backtester.py`**
    - Load `FeatureToggles`
    - Pass to probability calculation
-   - Apply calibration and double rounding
+   - Apply calibration if enabled
 
 **Implementation**:
 
@@ -646,20 +717,37 @@ def compare_zeus_vs_metar(
 from core.feature_toggles import FeatureToggles
 
 class Backtester:
-    def __init__(self, feature_toggles: Optional[FeatureToggles] = None):
-        self.feature_toggles = feature_toggles or FeatureToggles.load()
-        self.prob_mapper = ProbMapper()
+    def __init__(
+        self,
+        bankroll_usd: float = 10000.0,
+        edge_min: float = 0.05,
+        fee_bp: int = 50,
+        slippage_bp: int = 30,
+        feature_toggles: Optional[FeatureToggles] = None,  # NEW
+    ):
+        """Initialize backtester."""
+        self.bankroll_usd = bankroll_usd
+        self.edge_min = edge_min
+        self.fee_bp = fee_bp
+        self.slippage_bp = slippage_bp
+        self.feature_toggles = feature_toggles or FeatureToggles.load()  # NEW
+        
+        # Initialize components
+        self.prob_mapper = ProbabilityMapper()
+        # ... other components ...
     
-    def run_backtest(self, ...):
-        # Use self.feature_toggles in probability calculations
+    def _backtest_single_day(self, event_day: date, station_code: str):
+        # ... fetch forecast ...
+        
+        # Use feature_toggles in probability calculations
         probs = self.prob_mapper.map_daily_high(
-            forecast,
-            brackets,
+            forecast=forecast,
+            brackets=brackets,
             station_code=station_code,
-            venue=venue,
-            feature_toggles=self.feature_toggles,
+            venue="polymarket",
+            feature_toggles=self.feature_toggles,  # NEW
         )
-        # ...
+        # ... continue with backtest ...
 ```
 
 **Time Estimate**: 2-3 hours
@@ -668,14 +756,14 @@ class Backtester:
 
 ### Stage 8: Frontend - Toggle UI Components
 
-**Goal**: Create toggle controls
+**Goal**: Create toggle control for station calibration
 
 **Files to Create**:
 
 1. **`frontend/src/components/FeatureToggles.tsx`** (NEW)
-   - Toggle switches for each feature
+   - Toggle switch for station calibration
    - Save/load toggle states
-   - Visual feedback
+   - Visual feedback and status indicators
 
 **Implementation**:
 
@@ -683,21 +771,28 @@ class Backtester:
 // frontend/src/components/FeatureToggles.tsx
 import { useState, useEffect } from 'react';
 import { Switch } from '@/components/ui/switch';
+import { InfoIcon } from 'lucide-react';
 
 interface FeatureToggles {
-  polymarket_double_rounding: boolean;
   station_calibration: boolean;
+}
+
+interface CalibrationStatus {
+  enabled: boolean;
+  stations_with_calibration: string[];
+  total_calibrations: number;
 }
 
 export function FeatureToggles() {
   const [toggles, setToggles] = useState<FeatureToggles>({
-    polymarket_double_rounding: false,
     station_calibration: false,
   });
+  const [calibrationStatus, setCalibrationStatus] = useState<CalibrationStatus | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchToggles();
+    fetchCalibrationStatus();
   }, []);
 
   const fetchToggles = async () => {
@@ -707,14 +802,19 @@ export function FeatureToggles() {
     setLoading(false);
   };
 
-  const updateToggle = async (key: keyof FeatureToggles, value: boolean) => {
-    const newToggles = { ...toggles, [key]: value };
-    setToggles(newToggles);
+  const fetchCalibrationStatus = async () => {
+    const res = await fetch('/api/features/calibrations');
+    const data = await res.json();
+    setCalibrationStatus(data);
+  };
+
+  const updateToggle = async (value: boolean) => {
+    setToggles({ station_calibration: value });
 
     await fetch('/api/features/toggles', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ [key]: value }),
+      body: JSON.stringify({ station_calibration: value }),
     });
 
     // Trigger data refresh
@@ -722,76 +822,116 @@ export function FeatureToggles() {
   };
 
   return (
-    <div className="feature-toggles">
-      <h3>Feature Toggles</h3>
-      <div className="toggle-item">
-        <label>Polymarket Double Rounding</label>
-        <Switch
-          checked={toggles.polymarket_double_rounding}
-          onCheckedChange={(checked) =>
-            updateToggle('polymarket_double_rounding', checked)
-          }
-        />
-      </div>
-      <div className="toggle-item">
-        <label>Station Calibration</label>
-        <Switch
-          checked={toggles.station_calibration}
-          onCheckedChange={(checked) =>
-            updateToggle('station_calibration', checked)
-          }
-        />
+    <div className="feature-toggles p-4 border rounded-lg">
+      <h3 className="text-lg font-semibold mb-4">Feature Toggles</h3>
+      
+      <div className="toggle-item space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <label className="font-medium">Station Calibration</label>
+            <InfoIcon 
+              className="w-4 h-4 text-gray-400 cursor-help" 
+              title="Applies ERA5 bias corrections to Zeus predictions based on month and hour"
+            />
+          </div>
+          <Switch
+            checked={toggles.station_calibration}
+            onCheckedChange={updateToggle}
+            disabled={loading}
+          />
+        </div>
+        
+        {calibrationStatus && (
+          <div className="text-sm text-gray-600 ml-6">
+            {calibrationStatus.total_calibrations > 0 ? (
+              <span>
+                {calibrationStatus.total_calibrations} station(s) calibrated: {' '}
+                {calibrationStatus.stations_with_calibration.join(', ')}
+              </span>
+            ) : (
+              <span className="text-amber-600">
+                No calibration files found
+              </span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 ```
 
-**Time Estimate**: 3-4 hours
+**Time Estimate**: 2-3 hours
 
 ---
 
 ### Stage 9: Frontend - Live Dashboard Integration
 
-**Goal**: Update live dashboard when toggles change
+**Goal**: Update live dashboard when calibration toggle changes
 
 **Files to Modify**:
 
 1. **`frontend/src/pages/LiveDashboard.tsx`**
    - Listen for toggle updates
    - Refetch data when toggles change
-   - Pass toggles to API calls
+   - Show calibration status indicator
 
 **Implementation**:
 
 ```typescript
 // frontend/src/pages/LiveDashboard.tsx
-useEffect(() => {
-  const handleToggleUpdate = () => {
-    // Refetch all data with new toggles
-    refetchZeus();
-    refetchMarket();
-    refetchComparison();
+import { useEffect, useState } from 'react';
+
+export function LiveDashboard() {
+  const [calibrationEnabled, setCalibrationEnabled] = useState(false);
+  
+  useEffect(() => {
+    // Fetch initial toggle state
+    fetch('/api/features/toggles')
+      .then(r => r.json())
+      .then(data => setCalibrationEnabled(data.station_calibration));
+    
+    // Listen for toggle updates
+    const handleToggleUpdate = () => {
+      // Refetch all data with new toggles
+      refetchZeus();
+      refetchMarket();
+      refetchComparison();
+      
+      // Update local state
+      fetch('/api/features/toggles')
+        .then(r => r.json())
+        .then(data => setCalibrationEnabled(data.station_calibration));
+    };
+
+    window.addEventListener('toggles-updated', handleToggleUpdate);
+    return () => window.removeEventListener('toggles-updated', handleToggleUpdate);
+  }, []);
+
+  // API calls automatically use current toggle state (backend loads it)
+  const fetchComparison = async () => {
+    const res = await fetch(
+      `/api/compare/zeus-vs-metar?station=${station}&date=${date}`
+    );
+    // Backend automatically applies calibration if toggle is on
+    // ...
   };
 
-  window.addEventListener('toggles-updated', handleToggleUpdate);
-  return () => window.removeEventListener('toggles-updated', handleToggleUpdate);
-}, []);
-
-// Pass toggles to API
-const fetchComparison = async () => {
-  const toggles = await fetch('/api/features/toggles').then(r => r.json());
-  const res = await fetch(
-    `/api/compare/zeus-vs-metar?station=${station}&date=${date}`,
-    {
-      headers: {
-        'X-Feature-Toggles': JSON.stringify(toggles),
-      },
-    }
+  return (
+    <div>
+      {/* Show calibration status badge */}
+      {calibrationEnabled && (
+        <div className="badge badge-info">
+          Calibration Enabled
+        </div>
+      )}
+      {/* ... rest of dashboard ... */}
+    </div>
   );
-  // ...
-};
+}
 ```
+
+**Note**: Backend automatically loads toggles, so frontend doesn't need to pass them explicitly. Just refetch data when toggles change.
 
 **Time Estimate**: 2-3 hours
 
@@ -799,18 +939,60 @@ const fetchComparison = async () => {
 
 ### Stage 10: Frontend - Historical Pages Integration
 
-**Goal**: Update historical pages when toggles change
+**Goal**: Update historical pages when calibration toggle changes
 
 **Files to Modify**:
 
 1. **`frontend/src/pages/PerformanceAnalysis.tsx`**
    - Listen for toggle updates
-   - Refetch data with new toggles
-   - Update graphs and cards
+   - Refetch data when toggles change
+   - Update graphs and accuracy cards
+   - Show calibration status
 
 **Implementation**:
 
-Similar to Stage 9, but for historical data endpoints.
+```typescript
+// frontend/src/pages/PerformanceAnalysis.tsx
+export function PerformanceAnalysis() {
+  const [calibrationEnabled, setCalibrationEnabled] = useState(false);
+  
+  useEffect(() => {
+    // Fetch initial toggle state
+    fetch('/api/features/toggles')
+      .then(r => r.json())
+      .then(data => setCalibrationEnabled(data.station_calibration));
+    
+    // Listen for toggle updates
+    const handleToggleUpdate = () => {
+      // Refetch all historical data
+      refetchZeusSnapshots();
+      refetchMarketSnapshots();
+      refetchComparison();
+      
+      // Update local state
+      fetch('/api/features/toggles')
+        .then(r => r.json())
+        .then(data => setCalibrationEnabled(data.station_calibration));
+    };
+
+    window.addEventListener('toggles-updated', handleToggleUpdate);
+    return () => window.removeEventListener('toggles-updated', handleToggleUpdate);
+  }, []);
+
+  return (
+    <div>
+      {/* Show calibration status */}
+      {calibrationEnabled && (
+        <div className="alert alert-info">
+          <InfoIcon className="w-4 h-4" />
+          <span>Station calibration is enabled. All Zeus predictions are corrected.</span>
+        </div>
+      )}
+      {/* ... graphs and cards ... */}
+    </div>
+  );
+}
+```
 
 **Time Estimate**: 2-3 hours
 
@@ -818,37 +1000,58 @@ Similar to Stage 9, but for historical data endpoints.
 
 ### Stage 11: Frontend - Backtesting Integration
 
-**Goal**: Apply toggles in backtesting UI
+**Goal**: Show calibration status in backtesting UI
 
 **Files to Modify**:
 
 1. **`frontend/src/pages/Backtest.tsx`**
-   - Include toggles in backtest parameters
-   - Send toggles to backtest API
-   - Display toggle states in results
+   - Display current toggle state
+   - Show calibration status in results
+   - Note: Backend automatically uses current toggle state
 
 **Implementation**:
 
 ```typescript
 // frontend/src/pages/Backtest.tsx
-const runBacktest = async () => {
-  const toggles = await fetch('/api/features/toggles').then(r => r.json());
+export function Backtest() {
+  const [calibrationEnabled, setCalibrationEnabled] = useState(false);
   
-  const res = await fetch('/api/backtest/run', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      station: selectedStation,
-      start_date: startDate,
-      end_date: endDate,
-      feature_toggles: toggles,  // Include toggles
-    }),
-  });
-  // ...
-};
+  useEffect(() => {
+    fetch('/api/features/toggles')
+      .then(r => r.json())
+      .then(data => setCalibrationEnabled(data.station_calibration));
+  }, []);
+
+  const runBacktest = async () => {
+    // Backend automatically uses current toggle state
+    const res = await fetch('/api/backtest/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        station: selectedStation,
+        start_date: startDate,
+        end_date: endDate,
+        // Toggles are automatically loaded by backend
+      }),
+    });
+    // ...
+  };
+
+  return (
+    <div>
+      {/* Show calibration status */}
+      {calibrationEnabled && (
+        <div className="alert alert-info mb-4">
+          Station calibration is enabled for this backtest
+        </div>
+      )}
+      {/* ... backtest form and results ... */}
+    </div>
+  );
+}
 ```
 
-**Time Estimate**: 2-3 hours
+**Time Estimate**: 1-2 hours
 
 ---
 

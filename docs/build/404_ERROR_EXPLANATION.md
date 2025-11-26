@@ -100,3 +100,4 @@ We could improve event discovery by:
 - **Solution**: Restart engine to load updated code (404s logged as DEBUG)
 - **Status**: Not a bug, expected behavior
 
+

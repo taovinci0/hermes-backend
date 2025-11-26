@@ -3,6 +3,11 @@
 from fastapi import APIRouter, Query
 from typing import Optional
 from datetime import date
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+from core.feature_toggles import FeatureToggles
 
 from ..services.metar_service import MetarService
 
@@ -27,9 +32,13 @@ async def compare_zeus_vs_metar(
         except ValueError:
             pass
     
+    # Load feature toggles and pass to service
+    feature_toggles = FeatureToggles.load()
+    
     comparison = metar_service.compare_zeus_vs_metar(
         station_code=station_code,
         event_day=event_date,
+        feature_toggles=feature_toggles,  # NEW: Pass toggles
     )
     
     if comparison is None:

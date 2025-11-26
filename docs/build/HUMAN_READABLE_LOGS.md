@@ -189,3 +189,4 @@ Potential improvements:
 - **Filtering**: Filter by event type (only show trades, only show errors, etc.)
 - **Search**: Search within formatted messages
 
+

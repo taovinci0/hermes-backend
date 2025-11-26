@@ -13,6 +13,7 @@ from core.config import config
 from core.logger import logger
 from core.registry import StationRegistry
 from core.types import BracketProb
+from core.feature_toggles import FeatureToggles
 from agents.dynamic_trader.fetchers import DynamicFetcher
 from agents.dynamic_trader.snapshotter import DynamicSnapshotter
 from agents.prob_mapper import ProbabilityMapper
@@ -66,6 +67,9 @@ class DynamicTradingEngine:
         # Store configs
         self.trading_config = trading_config
         self.probability_model_config = probability_model_config
+        
+        # Load feature toggles
+        self.feature_toggles = FeatureToggles.load()
         
         # Components
         self.registry = StationRegistry()
@@ -206,7 +210,12 @@ class DynamicTradingEngine:
             original_model_mode = config.model_mode
             try:
                 config.model_mode = self.probability_model_config["model_mode"]
-                probs = self.prob_mapper.map_daily_high(forecast, brackets)
+                probs = self.prob_mapper.map_daily_high(
+                    forecast,
+                    brackets,
+                    station_code=station.station_code,  # NEW: Pass station code
+                    feature_toggles=self.feature_toggles,  # NEW: Pass feature toggles
+                )
             finally:
                 config.model_mode = original_model_mode
             

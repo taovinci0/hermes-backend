@@ -420,12 +420,17 @@ def run_backtest(start_str: str, end_str: str, stations: list[str]) -> None:
         )
         logger.warning("Results may be incomplete or fail.")
     
+    # Load feature toggles
+    from core.feature_toggles import FeatureToggles
+    feature_toggles = FeatureToggles.load()
+    
     # Initialize backtester
     backtester = Backtester(
         bankroll_usd=config.trading.daily_bankroll_cap,
         edge_min=config.trading.edge_min,
         fee_bp=config.trading.fee_bp,
         slippage_bp=config.trading.slippage_bp,
+        feature_toggles=feature_toggles,  # NEW: Pass feature toggles
     )
     
     # Run backtest

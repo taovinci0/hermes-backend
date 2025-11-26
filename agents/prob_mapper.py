@@ -12,6 +12,8 @@ from core.types import ZeusForecast, MarketBracket, BracketProb
 from core.logger import logger
 from core.config import config
 from core import units
+from core.feature_toggles import FeatureToggles
+from core.station_calibration import StationCalibration
 
 # Import probability models (Stage 7B)
 from agents.prob_models import spread_model, bands_model
@@ -36,6 +38,7 @@ class ProbabilityMapper:
         self.sigma_default = sigma_default
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
+        self.calibration = StationCalibration()  # NEW: Station calibration system
 
     def _compute_daily_high_mean(self, forecast: ZeusForecast) -> float:
         """Compute daily high mean μ as max of hourly temps.
@@ -204,10 +207,61 @@ class ProbabilityMapper:
 
         return bracket_probs
 
+    def _apply_calibration_to_forecast(
+        self,
+        forecast: ZeusForecast,
+        station_code: str,
+        feature_toggles: Optional[FeatureToggles] = None,
+    ) -> ZeusForecast:
+        """Apply calibration to forecast timeseries if enabled.
+        
+        Args:
+            forecast: Original Zeus forecast
+            station_code: Station code for calibration lookup
+            feature_toggles: Feature toggle configuration
+            
+        Returns:
+            Forecast with calibrated temperatures (or original if calibration disabled)
+        """
+        if not feature_toggles or not feature_toggles.station_calibration:
+            return forecast
+        
+        if not station_code:
+            return forecast
+        
+        if not self.calibration.has_calibration(station_code):
+            logger.debug(f"No calibration available for {station_code}")
+            return forecast
+        
+        # Apply calibration to timeseries
+        temps_k = [point.temp_K for point in forecast.timeseries]
+        timestamps = [point.time_utc for point in forecast.timeseries]
+        
+        calibrated_temps_k = self.calibration.apply_to_forecast_timeseries(
+            temps_k, timestamps, station_code
+        )
+        
+        # Create new forecast with calibrated temperatures
+        from copy import deepcopy
+        calibrated_forecast = deepcopy(forecast)
+        
+        # Update temperatures in timeseries
+        for i, point in enumerate(calibrated_forecast.timeseries):
+            point.temp_K = calibrated_temps_k[i]
+        
+        logger.debug(
+            f"Applied station calibration to {station_code} forecast "
+            f"({len(calibrated_temps_k)} points)"
+        )
+        
+        return calibrated_forecast
+    
     def map_daily_high(
         self,
         forecast: ZeusForecast,
         brackets: List[MarketBracket],
+        station_code: Optional[str] = None,
+        feature_toggles: Optional[FeatureToggles] = None,
     ) -> List[BracketProb]:
         """Convert Zeus forecast into daily-high distribution over brackets.
 
@@ -215,15 +269,21 @@ class ProbabilityMapper:
         - "spread" (default): Uses hourly spread × √2 (Stage 3 original)
         - "bands": Uses Zeus likely/possible confidence intervals (Stage 7B)
 
+        **CRITICAL**: Applies station calibration BEFORE computing probabilities
+        if feature toggle is enabled.
+
         Computes:
-        1. Daily high mean μ as max of hourly temps (K→°F)
-        2. Uncertainty σ_Z from Zeus bands or empirical spread
-        3. For each bracket [a,b), p_zeus = Φ((b-μ)/σ) - Φ((a-μ)/σ)
-        4. Normalize probabilities to sum ≈ 1.0
+        1. Apply calibration to timeseries (if enabled)
+        2. Daily high mean μ as max of hourly temps (K→°F)
+        3. Uncertainty σ_Z from Zeus bands or empirical spread
+        4. For each bracket [a,b), p_zeus = Φ((b-μ)/σ) - Φ((a-μ)/σ)
+        5. Normalize probabilities to sum ≈ 1.0
 
         Args:
             forecast: Zeus hourly temperature forecast
             brackets: List of market brackets to compute probabilities for
+            station_code: Station code for calibration lookup
+            feature_toggles: Feature toggle configuration (if None, uses defaults)
 
         Returns:
             List of BracketProb with Zeus-derived probabilities
@@ -236,6 +296,9 @@ class ProbabilityMapper:
 
         if not brackets:
             raise ValueError("No brackets provided")
+        
+        if feature_toggles is None:
+            feature_toggles = FeatureToggles()  # Default: all off
 
         logger.info(
             f"Mapping forecast for {forecast.station_code} "
@@ -243,13 +306,25 @@ class ProbabilityMapper:
             f"to {len(brackets)} brackets"
         )
 
+        # ✅ STEP 1: Apply calibration to forecast if enabled
+        calibrated_forecast = self._apply_calibration_to_forecast(
+            forecast,
+            station_code or forecast.station_code,
+            feature_toggles,
+        )
+        
+        if calibrated_forecast is not forecast:
+            logger.info(
+                f"📊 Station calibration applied to {station_code or forecast.station_code}"
+            )
+
         # Stage 7B: Route to appropriate model
         model_mode = config.model_mode
         
         if model_mode == "bands":
             logger.info("🧠 Using Zeus-Bands model (Stage 7B)")
             bracket_probs = bands_model.compute_probabilities(
-                forecast,
+                calibrated_forecast,  # Use calibrated forecast
                 brackets,
                 sigma_default=self.sigma_default,
                 sigma_min=self.sigma_min,
@@ -259,7 +334,7 @@ class ProbabilityMapper:
             # Default: spread model (Stage 3 original)
             logger.info("🧠 Using Spread model (default)")
             bracket_probs = spread_model.compute_probabilities(
-                forecast,
+                calibrated_forecast,  # Use calibrated forecast
                 brackets,
                 sigma_default=self.sigma_default,
                 sigma_min=self.sigma_min,

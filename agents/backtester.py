@@ -30,6 +30,7 @@ from agents.edge_and_sizing import Sizer
 from venues.polymarket.discovery import PolyDiscovery
 from venues.polymarket.pricing import PolyPricing
 from venues.polymarket.resolution import PolyResolution
+from core.feature_toggles import FeatureToggles
 
 
 @dataclass
@@ -83,6 +84,7 @@ class Backtester:
         edge_min: float = 0.05,
         fee_bp: int = 50,
         slippage_bp: int = 30,
+        feature_toggles: Optional[FeatureToggles] = None,  # NEW
     ):
         """Initialize backtester.
         
@@ -91,11 +93,13 @@ class Backtester:
             edge_min: Minimum edge threshold (default 5%)
             fee_bp: Fee in basis points (default 50bp)
             slippage_bp: Slippage in basis points (default 30bp)
+            feature_toggles: Feature toggle configuration (if None, loads from file)
         """
         self.bankroll_usd = bankroll_usd
         self.edge_min = edge_min
         self.fee_bp = fee_bp
         self.slippage_bp = slippage_bp
+        self.feature_toggles = feature_toggles or FeatureToggles.load()  # NEW
         
         # Initialize components
         self.registry = StationRegistry()
@@ -239,8 +243,13 @@ class Backtester:
             logger.debug(f"No brackets found for {station.city} on {trade_date}")
             return []
         
-        # 3. Map Zeus probabilities
-        zeus_probs = self.prob_mapper.map_daily_high(zeus_forecast, brackets)
+        # 3. Map Zeus probabilities (with feature toggles)
+        zeus_probs = self.prob_mapper.map_daily_high(
+            zeus_forecast,
+            brackets,
+            station_code=station_code,  # NEW: Pass station code
+            feature_toggles=self.feature_toggles,  # NEW: Pass feature toggles
+        )
         
         # 4. Get opening prices (prioritize saved snapshots, then API, then resolution-only)
         market_probs_open = []

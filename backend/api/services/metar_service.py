@@ -126,6 +126,7 @@ class MetarService:
         self,
         station_code: str,
         event_day: Optional[date] = None,
+        feature_toggles: Optional[Any] = None,  # NEW: FeatureToggles (using Any to avoid import issues)
     ) -> Optional[Dict[str, Any]]:
         """Compare Zeus forecast vs METAR actual temperature.
         
@@ -162,16 +163,72 @@ class MetarService:
         if not timeseries:
             return None
         
-        zeus_temps = [
-            point.get("temp_F")
-            for point in timeseries
-            if point.get("temp_F") is not None
-        ]
-        
-        if not zeus_temps:
-            return None
-        
-        zeus_high = max(zeus_temps)
+        # Apply calibration if enabled
+        if feature_toggles and feature_toggles.station_calibration:
+            from core.station_calibration import StationCalibration
+            from core import units
+            from datetime import datetime
+            
+            calibration = StationCalibration()
+            
+            # Extract temps and timestamps, apply calibration
+            calibrated_temps_f = []
+            for point in timeseries:
+                # Try to get temp_K first (preferred), fall back to temp_F
+                temp_k = point.get("temp_K")
+                if temp_k is None:
+                    # Convert from temp_F if temp_K not available
+                    temp_f = point.get("temp_F")
+                    if temp_f is None:
+                        continue
+                    temp_k = units.fahrenheit_to_kelvin(temp_f)
+                
+                # Get timestamp
+                time_utc_str = point.get("time_utc")
+                if not time_utc_str:
+                    continue
+                
+                try:
+                    # Parse timestamp (handle both with and without timezone)
+                    if time_utc_str.endswith("Z"):
+                        timestamp = datetime.fromisoformat(time_utc_str.replace("Z", "+00:00"))
+                    else:
+                        timestamp = datetime.fromisoformat(time_utc_str)
+                except (ValueError, AttributeError):
+                    continue
+                
+                # Apply calibration
+                temp_c = units.kelvin_to_celsius(temp_k)
+                temp_c_corrected = calibration.apply(temp_c, station_code, timestamp)
+                temp_k_corrected = units.celsius_to_kelvin(temp_c_corrected)
+                temp_f_corrected = units.kelvin_to_fahrenheit(temp_k_corrected)
+                
+                calibrated_temps_f.append(temp_f_corrected)
+            
+            if calibrated_temps_f:
+                zeus_high = max(calibrated_temps_f)
+            else:
+                # Fallback to original method if calibration failed
+                zeus_temps = [
+                    point.get("temp_F")
+                    for point in timeseries
+                    if point.get("temp_F") is not None
+                ]
+                if not zeus_temps:
+                    return None
+                zeus_high = max(zeus_temps)
+        else:
+            # No calibration - use original method
+            zeus_temps = [
+                point.get("temp_F")
+                for point in timeseries
+                if point.get("temp_F") is not None
+            ]
+            
+            if not zeus_temps:
+                return None
+            
+            zeus_high = max(zeus_temps)
         
         # Calculate error
         error_f = zeus_high - metar_high

@@ -13,6 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from agents.backtester import Backtester, BacktestSummary
 from core.config import config
+from core.feature_toggles import FeatureToggles
 from ..utils.job_queue import JobQueue, JobStatus, job_queue
 
 
@@ -102,12 +103,16 @@ class BacktestService:
         Returns:
             Result dictionary with output path and summary
         """
+        # Load feature toggles (backtester will use current toggle state)
+        feature_toggles = FeatureToggles.load()
+        
         # Initialize backtester with config or overrides
         backtester = Backtester(
             bankroll_usd=bankroll_usd or config.trading.daily_bankroll_cap,
             edge_min=edge_min or config.trading.edge_min,
             fee_bp=fee_bp or config.trading.fee_bp,
             slippage_bp=slippage_bp or config.trading.slippage_bp,
+            feature_toggles=feature_toggles,  # NEW: Pass feature toggles
         )
         
         # Run backtest
